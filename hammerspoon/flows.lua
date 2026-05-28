@@ -34,6 +34,15 @@ local config = {
   -- See research notes at bottom of file. Set to nil to disable (shows help alert).
   wisprDeeplink = "raycast://extensions/carterm/wispr-flow/start-recording",
 
+  -- Dogfood flow (⌃⌥⌘D): seconds to wait after activating Chrome before sending
+  -- ⌘E (panel toggle), and again before auto-starting Wispr.
+  dogfoodChromeDelay = 0.25,
+  dogfoodPanelDelay  = 0.6,
+  -- If true, after opening the Claude side panel, auto-start Wispr dictation so
+  -- you can immediately speak your prompt. The panel grabs focus on open, so the
+  -- dictation lands in its composer. Set false to just open the panel.
+  dogfoodStartWispr  = true,
+
   alertDuration = 1.5,
 }
 
@@ -169,9 +178,13 @@ end
 
 function M.claudeChromeDogfood()
   hs.application.launchOrFocus("Google Chrome")
-  -- Give Chrome a beat to come to the foreground before sending the shortcut.
-  hs.timer.doAfter(0.25, function()
+  -- 1) let Chrome come forward, 2) toggle the Claude side panel (⌘E),
+  -- 3) optionally auto-start Wispr so dictation lands in the panel composer.
+  hs.timer.doAfter(config.dogfoodChromeDelay, function()
     hs.eventtap.keyStroke({ "cmd" }, "e", 0)
+    if config.dogfoodStartWispr then
+      hs.timer.doAfter(config.dogfoodPanelDelay, function() M.startWispr() end)
+    end
   end)
 end
 
