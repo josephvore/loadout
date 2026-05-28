@@ -28,6 +28,7 @@ link ".zshrc"                            "${HOME}/.zshrc"
 link ".zprofile"                         "${HOME}/.zprofile"
 link ".zshenv"                           "${HOME}/.zshenv"
 link "hammerspoon/init.lua"              "${HOME}/.hammerspoon/init.lua"
+link "hammerspoon/flows.lua"             "${HOME}/.hammerspoon/flows.lua"
 link "raycast-scripts/kill-dev-servers.sh" "${HOME}/.config/raycast/scripts/kill-dev-servers.sh"
 
 echo

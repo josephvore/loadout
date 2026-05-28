@@ -1,0 +1,249 @@
+-- flows.lua — quick-launch / voice flows for Hammerspoon.
+-- Load from ~/.hammerspoon/init.lua with: pcall(function() require("flows").start() end)
+--
+-- IMPORTANT: QuickShots owns the F18 (Caps Lock) event tap and consumes it,
+-- so this module uses ordinary triple-modifier global hotkeys instead of
+-- Caps-based bindings. Triple-modifier (ctrl+alt+cmd) combos are collision-free
+-- because apps essentially never bind them.
+
+local M = {}
+
+----------------------------------------------------------------
+-- CONFIG — edit hotkeys and paths here.
+----------------------------------------------------------------
+local config = {
+  -- Hotkeys. Each is { mods, key }. ctrl+alt+cmd = collision-free.
+  hotkeys = {
+    obsidian = { { "ctrl", "alt", "cmd" }, "n" }, -- Obsidian quick capture
+    claude   = { { "ctrl", "alt", "cmd" }, "c" }, -- Voice Claude Code (new iTerm)
+    dogfood  = { { "ctrl", "alt", "cmd" }, "d" }, -- Claude Chrome side panel (Cmd+E)
+    search   = { { "ctrl", "alt", "cmd" }, "g" }, -- Chrome new tab / search
+    wispr    = { { "ctrl", "alt", "cmd" }, "w" }, -- Start Wispr Flow dictation
+  },
+
+  -- Obsidian Quick Capture markdown file (Inbox dir + file auto-created).
+  quickCaptureFile = "/Users/josephvore/Library/Mobile Documents/iCloud~md~obsidian/Documents/EquipFlow/Inbox/Quick Capture.md",
+
+  -- Fallback repo for Voice Claude Code when the iTerm cwd can't be resolved.
+  claudeRepoFallback = "/Volumes/Code/EquipFlow/equipflow",
+
+  -- Command run in the new iTerm window.
+  claudeCommand = "claude --dangerously-skip-permissions",
+
+  -- Wispr Flow Raycast extension deeplink (carterm/wispr-flow "Start Recording").
+  -- See research notes at bottom of file. Set to nil to disable (shows help alert).
+  wisprDeeplink = "raycast://extensions/carterm/wispr-flow/start-recording",
+
+  alertDuration = 1.5,
+}
+
+----------------------------------------------------------------
+-- Obsidian quick-capture append (pure Lua, no Hammerspoon deps).
+-- Unit-testable: require this file in plain `lua` and call M.appendCapture.
+----------------------------------------------------------------
+
+-- Split a path into its directory component (everything before the last "/").
+local function dirname(path)
+  return (path:match("^(.*)/[^/]*$"))
+end
+
+-- Best-effort recursive mkdir using os.execute (works under plain Lua and HS).
+local function ensureDir(dir)
+  if not dir or dir == "" then return end
+  os.execute(string.format("mkdir -p %q", dir))
+end
+
+-- Append `text` to `filePath` as a timestamped markdown task bullet under a
+-- per-day "## YYYY-MM-DD" heading. The heading is written once per day: it is
+-- only added when the most recent day-heading in the file differs from today.
+--
+-- Returns true on success, or false plus an error message.
+-- `now` is an optional os.date-compatible timestamp (for deterministic tests).
+function M.appendCapture(filePath, text, now)
+  if not filePath or filePath == "" then return false, "no file path" end
+  if not text or text:match("^%s*$") then return false, "empty text" end
+
+  now = now or os.time()
+  local today = os.date("%Y-%m-%d", now)
+  local hhmm = os.date("%H:%M", now)
+  local heading = "## " .. today
+
+  ensureDir(dirname(filePath))
+
+  -- Determine whether today's heading already exists by scanning existing day
+  -- headings; we only need to know if `heading` is present anywhere.
+  local headingExists = false
+  local existing = io.open(filePath, "r")
+  if existing then
+    for line in existing:lines() do
+      if line == heading then
+        headingExists = true
+        break
+      end
+    end
+    existing:close()
+  end
+
+  local f, err = io.open(filePath, "a")
+  if not f then return false, err or "could not open file" end
+
+  if not headingExists then
+    f:write("\n" .. heading .. "\n")
+  end
+  -- Collapse internal newlines so dictated multi-line input stays one bullet.
+  local oneLine = text:gsub("%s*\n%s*", " "):gsub("%s+$", "")
+  f:write(string.format("- [ ] %s %s\n", hhmm, oneLine))
+  f:close()
+  return true
+end
+
+----------------------------------------------------------------
+-- Flow actions (require Hammerspoon at runtime).
+----------------------------------------------------------------
+
+function M.obsidianCapture()
+  local btn, text = hs.dialog.textPrompt(
+    "Quick Capture",
+    "Capture to Obsidian Inbox (Wispr dictation works here):",
+    "",
+    "Save",
+    "Cancel"
+  )
+  if btn ~= "Save" then return end
+  if not text or text:match("^%s*$") then return end
+  local ok, err = M.appendCapture(config.quickCaptureFile, text)
+  if ok then
+    hs.alert.show("Captured to Obsidian", config.alertDuration)
+  else
+    hs.alert.show("Capture failed: " .. tostring(err), config.alertDuration)
+  end
+end
+
+-- Resolve the git toplevel of the frontmost iTerm session's cwd, if possible.
+-- Returns the repo path or the configured fallback.
+local function resolveClaudeRepo()
+  local script = [[
+    tell application "iTerm"
+      if (count of windows) is 0 then return ""
+      tell current session of current window
+        try
+          return (variable named "session.path")
+        on error
+          return ""
+        end try
+      end tell
+    end tell
+  ]]
+  local ok, result = hs.osascript.applescript(script)
+  if ok and result and result ~= "" then
+    -- result is the session cwd; ask git for its toplevel.
+    local cmd = string.format("cd %q && git rev-parse --show-toplevel 2>/dev/null", result)
+    local out = hs.execute(cmd, true) -- true = run in a login shell so git is on PATH
+    if out then
+      out = out:gsub("%s+$", "")
+      if out ~= "" then return out end
+    end
+  end
+  return config.claudeRepoFallback
+end
+
+function M.voiceClaudeCode()
+  local repo = resolveClaudeRepo()
+  -- Escape double quotes for safe embedding inside the AppleScript string.
+  local repoEsc = repo:gsub('"', '\\"')
+  local cmdEsc = config.claudeCommand:gsub('"', '\\"')
+  local script = string.format([[
+    tell application "iTerm"
+      create window with default profile
+      tell current session of current window
+        write text "cd \"%s\" && %s"
+      end tell
+      activate
+    end tell
+  ]], repoEsc, cmdEsc)
+  local ok, _, raw = hs.osascript.applescript(script)
+  if not ok then
+    hs.alert.show("iTerm launch failed", config.alertDuration)
+  end
+end
+
+function M.claudeChromeDogfood()
+  hs.application.launchOrFocus("Google Chrome")
+  -- Give Chrome a beat to come to the foreground before sending the shortcut.
+  hs.timer.doAfter(0.25, function()
+    hs.eventtap.keyStroke({ "cmd" }, "e", 0)
+  end)
+end
+
+function M.chromeSearch()
+  hs.application.launchOrFocus("Google Chrome")
+  hs.timer.doAfter(0.25, function()
+    hs.eventtap.keyStroke({ "cmd" }, "t", 0)
+  end)
+end
+
+function M.startWispr()
+  if config.wisprDeeplink and config.wisprDeeplink ~= "" then
+    hs.execute(string.format("open %q", config.wisprDeeplink))
+  else
+    hs.alert.show(
+      "Wispr start needs the Wispr Flow Raycast extension.\n" ..
+      "Bind config.wisprDeeplink to e.g.\n" ..
+      "raycast://extensions/carterm/wispr-flow/start-recording",
+      4
+    )
+  end
+end
+
+----------------------------------------------------------------
+-- start() — bind everything. Each binding is pcall-wrapped so one
+-- failure cannot prevent the others from registering.
+----------------------------------------------------------------
+function M.start()
+  local function bind(spec, fn, label)
+    if not spec then return end
+    local ok, err = pcall(function()
+      hs.hotkey.bind(spec[1], spec[2], fn)
+    end)
+    if not ok then
+      hs.alert.show("flows: failed to bind " .. tostring(label) .. ": " .. tostring(err), 3)
+    end
+  end
+
+  bind(config.hotkeys.obsidian, function() M.obsidianCapture() end,    "obsidian")
+  bind(config.hotkeys.claude,   function() M.voiceClaudeCode() end,    "claude")
+  bind(config.hotkeys.dogfood,  function() M.claudeChromeDogfood() end, "dogfood")
+  bind(config.hotkeys.search,   function() M.chromeSearch() end,       "search")
+  bind(config.hotkeys.wispr,    function() M.startWispr() end,         "wispr")
+
+  hs.alert.show("flows ready", config.alertDuration)
+end
+
+-- Exposed so users can read/mutate config from init.lua before/after start().
+M.config = config
+
+return M
+
+----------------------------------------------------------------
+-- WISPR DEEPLINK RESEARCH NOTES
+----------------------------------------------------------------
+-- The Wispr Flow Raycast extension (raycast.com/carterm/wispr-flow) exposes
+-- these commands: Search Transcripts, Add Word to Dictionary, Manage Dictionary,
+-- Toggle Recording, Start Recording, Stop Recording, Paste Last Transcript,
+-- Open Wispr Flow.
+--
+-- Raycast deeplinks follow the form:
+--   raycast://extensions/<author>/<extension>/<command-slug>
+-- where <command-slug> is the command's kebab-cased name. So:
+--   Start Recording  -> raycast://extensions/carterm/wispr-flow/start-recording
+--   Toggle Recording -> raycast://extensions/carterm/wispr-flow/toggle-recording
+--   Stop Recording   -> raycast://extensions/carterm/wispr-flow/stop-recording
+--
+-- "Start Recording" / "Stop Recording" / "Toggle Recording" are no-view
+-- commands (designed for automation), so firing the deeplink with `open` runs
+-- them with no UI. This module uses start-recording (config.wisprDeeplink);
+-- swap to toggle-recording if you prefer one hotkey for start+stop.
+--
+-- DEPENDENCY: requires Raycast + the carterm/wispr-flow extension installed.
+-- If the slug differs in your install, open Raycast, find the command, and use
+-- its "Copy Deeplink" action to get the exact URL, then set config.wisprDeeplink.

@@ -16,7 +16,7 @@ Version-controlled macOS environment configs, symlinked into place.
 
 - **QuickShots** — its own repo at `github.com/josephvore/quickshots`, symlinked
   `~/.hammerspoon/quickshots.lua -> /Volumes/Code/quickshots/quickshots.lua`.
-- **`flows.lua`** — quick-launch / voice hotkeys. *(TODO: move into this repo.)*
+(All Hammerspoon configs except QuickShots are now tracked here.)
 
 ## Setup on a new machine
 
