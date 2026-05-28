@@ -1,0 +1,12 @@
+# Never commit secrets or machine-local noise.
+*.bak
+*.backup-*
+*.prelink-backup-*
+.DS_Store
+# Guard against accidental secret material landing here.
+*.pem
+*.key
+*_token
+*_secret
+.env
+.env.*
