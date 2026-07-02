@@ -18,7 +18,7 @@ local config = {
     claude   = { { "ctrl", "alt", "cmd" }, "c" }, -- Voice Claude Code (new iTerm)
     dogfood  = { { "ctrl", "alt", "cmd" }, "d" }, -- Claude Chrome side panel (Cmd+E)
     search   = { { "ctrl", "alt", "cmd" }, "g" }, -- Chrome new tab / search
-    wispr    = { { "ctrl", "alt", "cmd" }, "w" }, -- Start Wispr Flow dictation
+    wispr    = nil, -- Wispr Flow hotkey removed; startWispr() still exists for the dogfood flow
   },
 
   -- Obsidian Quick Capture markdown file (Inbox dir + file auto-created).
