@@ -23,10 +23,9 @@ local config = {
   -- This project has access to the GPT-5 family only.
   --   model           — manual Caps+C / Caps+S. gpt-5.4 edits best (cuts
   --                     filler, not just grammar) at ~1.4-2.4s.
-  --   autoRefineModel — the dictation auto-path (runs on every take). Uses
-  --                     -mini for ~0.7-0.9s so release→paste stays snappy;
-  --                     bump to "gpt-5.4" to match Caps+C quality, or drop to
-  --                     "gpt-5.4-nano" for the lowest latency.
+  --   autoRefineModel — optional dictation cleanup. Dictation no longer runs
+  --                     this by default because release→paste needs to be
+  --                     immediate; keep it available for explicit cleanup.
   model = "gpt-5.4",
   autoRefineModel = "gpt-5.4-mini",
   reasoningEffort = "none", -- fastest; gpt-5.4 supports none/low/medium/high/xhigh
@@ -49,17 +48,17 @@ local config = {
     .. "and understanding without changing its meaning or intent. "
     .. "Return only the refined text — no preamble, no quotes, no commentary.",
 
-  -- Dictation auto-path: format raw speech-to-text. A different job from the
-  -- generic refine: add sentence boundaries and fix clear recognition slips,
-  -- but preserve the speaker's wording, repetitions, and tone.
+  -- Dictation cleanup: keep this much more conservative than the generic
+  -- refine path. The raw transcript should still sound like the speaker.
   dictationPrompt =
-    "You are formatting raw speech-to-text dictation. Add punctuation, "
-    .. "capitalization, and paragraph breaks where the grammar clearly supports "
-    .. "them. Fix obvious speech-recognition mistakes and homophones only when "
-    .. "the intended word is clear. Preserve the speaker's wording, repetitions, "
-    .. "rambling structure, meaning, and tone. Do not summarize, rewrite, add "
-    .. "new ideas, or remove content just because it sounds casual. Return only "
-    .. "the formatted text: no preamble, no quotes, no commentary.",
+    "You are lightly cleaning raw speech-to-text dictation. Preserve the exact "
+    .. "wording, repetitions, rambling structure, meaning, and tone. Do not "
+    .. "rewrite, summarize, tighten, remove filler, or add new ideas. Fix only "
+    .. "clear speech-recognition mistakes and glossary terms when the intended "
+    .. "word is obvious. Use minimal punctuation: avoid commas unless required "
+    .. "for basic grammar, and do not insert punctuation merely because the "
+    .. "speaker paused or changed pace. Return only the cleaned text: no "
+    .. "preamble, no quotes, no commentary.",
 
   -- Caps-held bindings (require QuickShots' registerCapsAction).
   capsClipboard = { {}, "c" },

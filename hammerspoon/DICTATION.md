@@ -24,9 +24,9 @@ final paste output.
 2. `~/bin/hs-dictate` streams partial text and returns a final transcript.
 3. Lua keeps the raw transcript on the clipboard as a backup.
 4. Conservative local cleanup normalizes exact glossary/correction entries.
-5. Longer text is sent to `refine.lua` for formatting, not rewriting.
-6. The formatted text is pasted. If formatting fails or times out, raw text is
-   pasted instead.
+5. The cleaned raw text is pasted immediately.
+6. AI cleanup stays available through `refine.lua`, but it is off by default for
+   the dictation path because it adds latency and can invent punctuation.
 
 ## Wispr-Style Improvement Backlog
 

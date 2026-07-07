@@ -75,14 +75,12 @@ local config = {
   -- downstream hangs or crashes, Cmd+V has your words.
   clipboardBackup = true,
 
-  -- Run every transcript through refine.lua's dictation cleanup (fast model +
-  -- filler removal + your glossary) before pasting. The raw transcript is
-  -- pasted unchanged if refine fails, times out, or the take is shorter than
-  -- autoRefineMinChars (short takes like "sounds good" aren't worth the
-  -- round-trip). The raw text sits on the clipboard as a backup the whole time.
-  autoRefine = true,
-  autoRefineTimeout = 5,    -- seconds to wait before pasting raw instead
-  autoRefineMinChars = 25,  -- takes shorter than this paste raw immediately
+  -- Paste immediately by default. AI cleanup is useful as an explicit command,
+  -- but running it on every take adds visible lag and can invent commas or
+  -- sentence breaks while you are thinking out loud.
+  autoRefine = false,
+  autoRefineTimeout = 2.5,   -- seconds to wait before pasting raw instead
+  autoRefineMinChars = 120,  -- only long takes are candidates when enabled
 
   -- Free, local cleanup that runs before paste. This is intentionally
   -- conservative: polish transcription artifacts without changing meaning.
@@ -159,6 +157,7 @@ local lastPasteApp = nil    -- app of the previous paste (smart spacing)
 local typedSinceLastPaste = false
 local inputWatcher = nil
 local inputDebounce = nil
+local inputSwitchCooldownUntil = 0
 local beginAtMs = nil
 local startedAtMs = nil
 local finishAtMs = nil
@@ -688,11 +687,29 @@ local function stopDaemonForInputSwitch()
   end
 end
 
-local function ensurePreferredInput()
+local function ensurePreferredInput(allowRestart)
   local current = hs.audiodevice.defaultInputDevice()
   local preferred = preferredInputDevice()
   if not preferred then return false end
   if current and current:uid() == preferred:uid() then return false end
+  if task and not allowRestart then
+    local now = hs.timer.secondsSinceEpoch()
+    if now >= inputSwitchCooldownUntil then
+      preferred:setDefaultInputDevice()
+      inputSwitchCooldownUntil = now + 5.0
+      log.warn("preferred input drifted while daemon hot; reasserted without restart", {
+        from = current and current:name() or nil,
+        to = preferred:name(),
+      })
+    else
+      log.debug("preferred input drifted while daemon hot; cooldown active", {
+        from = current and current:name() or nil,
+        preferred = preferred:name(),
+        remainingMs = math.floor((inputSwitchCooldownUntil - now) * 1000),
+      })
+    end
+    return false
+  end
   stopDaemonForInputSwitch()
   preferred:setDefaultInputDevice()
   log.info("default input changed", {
@@ -704,10 +721,19 @@ end
 
 local function maintainPreferredInput()
   if state ~= "idle" then return end
-  local changed = ensurePreferredInput()
+  local now = hs.timer.secondsSinceEpoch()
+  if now < inputSwitchCooldownUntil then
+    log.debug("input switch cooldown active", {
+      remainingMs = math.floor((inputSwitchCooldownUntil - now) * 1000),
+    })
+    hs.timer.doAfter(inputSwitchCooldownUntil - now + 0.25, maintainPreferredInput)
+    return
+  end
+  local changed = ensurePreferredInput(false)
   if changed then
+    inputSwitchCooldownUntil = now + 3.0
     log.info("input watcher changed device; respawning daemon after debounce")
-    hs.timer.doAfter(1.0, function()
+    hs.timer.doAfter(1.5, function()
       if state == "idle" then spawnDaemon() end
     end)
   end
@@ -718,7 +744,7 @@ local function startInputWatcher()
   hs.audiodevice.watcher.setCallback(function()
     log.debug("audio device watcher fired")
     if inputDebounce then inputDebounce:stop() end
-    inputDebounce = hs.timer.doAfter(0.5, maintainPreferredInput)
+    inputDebounce = hs.timer.doAfter(1.25, maintainPreferredInput)
   end)
   hs.audiodevice.watcher.start()
   inputWatcher = hs.audiodevice.watcher

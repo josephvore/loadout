@@ -96,25 +96,20 @@ actor Dictator {
     }
 
     private func makeTranscriber() -> DictationTranscriber {
-        var transcriptionOptions = Set<DictationTranscriber.TranscriptionOption>()
+        var preset = DictationTranscriber.Preset.progressiveLongDictation
+        preset.contentHints.insert(.farField)
+        preset.transcriptionOptions.remove(.punctuation)
+        preset.transcriptionOptions.remove(.emoji)
+        preset.transcriptionOptions.remove(.etiquetteReplacements)
         if punctuation {
-            transcriptionOptions.insert(.punctuation)
+            preset.transcriptionOptions.insert(.punctuation)
         }
-
-        var reportingOptions: Set<DictationTranscriber.ReportingOption> = [
-            .volatileResults
-        ]
+        preset.reportingOptions.insert(.volatileResults)
         if fastResults {
-            reportingOptions.insert(.frequentFinalization)
+            preset.reportingOptions.insert(.frequentFinalization)
         }
 
-        return DictationTranscriber(
-            locale: locale,
-            contentHints: Set<DictationTranscriber.ContentHint>(),
-            transcriptionOptions: transcriptionOptions,
-            reportingOptions: reportingOptions,
-            attributeOptions: []
-        )
+        return DictationTranscriber(locale: locale, preset: preset)
     }
 
     private func audioError(_ msg: String) -> NSError {
@@ -147,9 +142,11 @@ actor Dictator {
         }
 
         try await rebuild()
+        // Make "ready" mean the audio path is already open. Otherwise the
+        // first real take pays the AVAudioEngine/tap startup cost.
+        try startAudioIfNeeded()
 
-        // Keep the model warm. The mic tap is opened on first use and held
-        // until the idle timer releases it, which keeps start latency low.
+        // Keep the model and mic warm until the idle timer releases them.
         scheduleIdleStop()
     }
 
