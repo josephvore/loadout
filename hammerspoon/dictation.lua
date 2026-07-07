@@ -693,21 +693,10 @@ local function ensurePreferredInput(allowRestart)
   if not preferred then return false end
   if current and current:uid() == preferred:uid() then return false end
   if task and not allowRestart then
-    local now = hs.timer.secondsSinceEpoch()
-    if now >= inputSwitchCooldownUntil then
-      preferred:setDefaultInputDevice()
-      inputSwitchCooldownUntil = now + 5.0
-      log.warn("preferred input drifted while daemon hot; reasserted without restart", {
-        from = current and current:name() or nil,
-        to = preferred:name(),
-      })
-    else
-      log.debug("preferred input drifted while daemon hot; cooldown active", {
-        from = current and current:name() or nil,
-        preferred = preferred:name(),
-        remainingMs = math.floor((inputSwitchCooldownUntil - now) * 1000),
-      })
-    end
+    log.warn("preferred input drifted while daemon hot; leaving daemon stable", {
+      from = current and current:name() or nil,
+      preferred = preferred:name(),
+    })
     return false
   end
   stopDaemonForInputSwitch()
@@ -1071,6 +1060,26 @@ local function disarmWatchdog()
   end
 end
 
+local function restartDaemonSoon(reason, delay)
+  log.warn("restarting daemon", { reason = reason, delay = delay or 0.5 })
+  local old = task
+  task = nil
+  daemonReady = false
+  stdoutBuf = ""
+  pendingStart = false
+  stopOnStarted = false
+  stopReason = nil
+  handsFree = false
+  state = "idle"
+  hidePill()
+  unbindEsc()
+  disarmWatchdog()
+  if old then old:terminate() end
+  hs.timer.doAfter(delay or 0.5, function()
+    if state == "idle" then spawnDaemon() end
+  end)
+end
+
 local function armWatchdog()
   disarmWatchdog()
   stopWatchdog = hs.timer.doAfter(config.stopTimeout, function()
@@ -1187,6 +1196,12 @@ handleEvent = function(event)
 
   elseif e == "error" then
     log.error("daemon error", { message = event.message })
+    if tostring(event.message or ""):match("^mic start:")
+        or tostring(event.message or ""):match("^analyzer start:") then
+      restartDaemonSoon(event.message, 0.75)
+      hs.alert.show("Dictation mic reset — try again", 1.2)
+      return
+    end
     hs.alert.show("Dictation error: " .. tostring(event.message),
       config.alertDuration + 1)
   end

@@ -144,7 +144,7 @@ actor Dictator {
         try await rebuild()
         // Make "ready" mean the audio path is already open. Otherwise the
         // first real take pays the AVAudioEngine/tap startup cost.
-        try startAudioIfNeeded()
+        try await startAudioRecovering()
 
         // Keep the model and mic warm until the idle timer releases them.
         scheduleIdleStop()
@@ -266,6 +266,17 @@ actor Dictator {
         releaseAudioTap()
     }
 
+    private func startAudioRecovering() async throws {
+        do {
+            try startAudioIfNeeded()
+        } catch {
+            releaseAudioTap()
+            try? await Task.sleep(for: .milliseconds(150))
+            try await rebuild()
+            try startAudioIfNeeded()
+        }
+    }
+
     func start() async {
         guard !recording else { return }
         guard let analyzer, let transcriber, analyzerFormat != nil else {
@@ -275,7 +286,9 @@ actor Dictator {
 
         idleTask?.cancel()
         idleTask = nil
-        do { try startAudioIfNeeded() } catch {
+        do {
+            try await startAudioRecovering()
+        } catch {
             emitError("mic start: \(error.localizedDescription)")
             return
         }
