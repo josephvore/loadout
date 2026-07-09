@@ -30,12 +30,12 @@ local config = {
   locale = "en_US",
 
   -- Bias the transcriber toward more frequent partial/final updates. Keep
-  -- this off by default: literal text quality matters more than churn.
+  -- this off by default: stable final text matters more than partial churn.
   fastResults = false,
 
-  -- Keep automatic punctuation off. Pauses while thinking should not become
-  -- commas or periods; dictate the words "comma" or "period" as words.
-  punctuation = false,
+  -- Let Apple supply a rough punctuation pass; the Flow-style cleanup below
+  -- gets the final say on punctuation, paragraphing, and filler removal.
+  punctuation = true,
 
   -- The daemon keeps the mic engine HOT between takes (starting it fresh
   -- costs ~100-300 ms and clips your first word). -1 holds it forever for
@@ -75,12 +75,13 @@ local config = {
   -- downstream hangs or crashes, Cmd+V has your words.
   clipboardBackup = true,
 
-  -- Paste immediately by default. AI cleanup is useful as an explicit command,
-  -- but running it on every take adds visible lag and can invent commas or
-  -- sentence breaks while you are thinking out loud.
-  autoRefine = false,
-  autoRefineTimeout = 2.5,   -- seconds to wait before pasting raw instead
-  autoRefineMinChars = 120,  -- only long takes are candidates when enabled
+  -- Flow-style default: capture locally, then polish with OpenAI before paste.
+  -- The cleaned transcript is copied to the clipboard immediately as backup;
+  -- if polish fails or runs too long, raw text still pastes.
+  autoRefine = true,
+  autoRefineTimeout = 8.0,   -- seconds to wait before pasting raw instead
+  autoRefineMinChars = 12,   -- skip only tiny acknowledgements
+  autoRefineMinWords = 4,
 
   -- Free, local cleanup that runs before paste. This is intentionally
   -- conservative: polish transcription artifacts without changing meaning.
@@ -92,27 +93,24 @@ local config = {
   correctionMemoryPath = os.getenv("HOME") .. "/dotfiles/hammerspoon/dictation_corrections.tsv",
 
   -- Spoken editing commands: "new paragraph", "scratch that", "comma",
-  -- "open quote", "send" (when dictated alone), etc. Off by default because
-  -- literal dictation should not reinterpret normal speech as commands.
-  voiceCommands = false,
+  -- "open quote", "send" (when dictated alone), etc.
+  voiceCommands = true,
 
-  -- Extra local cleanup only for longer rambly takes. Short replies stay
-  -- instant and nearly literal.
-  longDictationPolish = false,
+  -- Extra local cleanup only for longer rambly takes before the LLM pass.
+  longDictationPolish = true,
   longDictationMinWords = 35,
 
-  -- Rejoin short SpeechAnalyzer fragments into sentence-like text. Off by
-  -- default because it inserts punctuation after pauses.
-  joinChoppyFragments = false,
+  -- Rejoin short SpeechAnalyzer fragments into sentence-like text.
+  joinChoppyFragments = true,
 
   -- Write short transcript samples into logs so agents can debug actual
   -- capture/cleanup failures. Logs are local and gitignored.
   logTranscriptSamples = true,
   logTranscriptSampleChars = 320,
 
-  -- Show live words in the overlay. false keeps the UI quieter and avoids
-  -- exposing a constantly changing transcript on screen.
-  showLiveTranscript = false,
+  -- Show live words in the overlay so the app feels like a live dictation
+  -- surface instead of a black-box paste macro.
+  showLiveTranscript = true,
 
   -- Show a small live mic level meter in the pill. Disabled until the daemon
   -- has a crash-safe level source; the visual shell stays small and quiet.
@@ -130,8 +128,17 @@ local config = {
   -- fresh daemon. (The daemon itself already caps finalize at ~1s; this is
   -- the belt-and-braces layer above it.)
   stopTimeout = 2.5,
+  cancelTimeout = 0.8,
 
-  pasteDelay = 0.03,   -- wait after writing pasteboard before Cmd+V
+  -- Starting should feel instant when the daemon is warm. If CoreAudio gets
+  -- stuck while opening the mic, reset quickly instead of leaving the hotkey
+  -- in a dead "starting" state.
+  startTimeout = 1.8,
+  startRetryDelay = 0.35,
+  inputSwitchCooldownSeconds = 8.0,
+  deviceFailureCooldownSeconds = 45.0,
+
+  pasteDelay = 0.01,   -- wait after writing pasteboard before Cmd+V
   restoreDelay = 0.4,  -- wait after paste before restoring old clipboard
   alertDuration = 2.0,
 }
@@ -153,6 +160,8 @@ local stdoutBuf = ""
 local lastPartial = ""      -- newest live transcript (for backup/recovery)
 local stopReason = nil      -- "finish" | "cancel" — why we entered stopping
 local stopWatchdog = nil    -- hs.timer guarding against a wedged "Finishing…"
+local startWatchdog = nil   -- hs.timer guarding against a wedged mic start
+local disarmStartWatchdog = nil -- forward declaration for daemon restarts
 local lastPasteApp = nil    -- app of the previous paste (smart spacing)
 local typedSinceLastPaste = false
 local inputWatcher = nil
@@ -161,6 +170,12 @@ local inputSwitchCooldownUntil = 0
 local beginAtMs = nil
 local startedAtMs = nil
 local finishAtMs = nil
+local lastStartLatencyMs = nil
+local lastFinalizeMs = nil
+local lastTakeMs = nil
+local lastPasteQueueMs = nil
+local lastErrorMessage = nil
+local deviceFailureUntil = {}
 
 local function transcriptSample(text)
   if not config.logTranscriptSamples then return nil end
@@ -188,8 +203,8 @@ local pill = nil
 local pillVisible = false
 local currentLevel = 0
 
-local PILL_W, PILL_H = 292, 36
-local METER_START, METER_BARS = 154, 12
+local PILL_W, PILL_H = 460, 48
+local METER_START, METER_BARS = 344, 9
 
 local function pillFrame()
   local f = hs.screen.mainScreen():frame()
@@ -209,38 +224,47 @@ local function showPill(text, live)
     pill[1] = {
       type = "rectangle",
       action = "strokeAndFill",
-      roundedRectRadii = { xRadius = 9, yRadius = 9 },
-      fillColor = { red = 0.045, green = 0.047, blue = 0.052, alpha = 0.84 },
-      strokeColor = { white = 1, alpha = 0.08 },
+      roundedRectRadii = { xRadius = 13, yRadius = 13 },
+      fillColor = { red = 0.035, green = 0.039, blue = 0.047, alpha = 0.92 },
+      strokeColor = { red = 0.42, green = 0.78, blue = 1, alpha = 0.22 },
       strokeWidth = 1,
     }
     pill[2] = { -- recording dot
+      type = "rectangle",
+      action = "strokeAndFill",
+      frame = { x = 14, y = 13, w = 22, h = 22 },
+      roundedRectRadii = { xRadius = 11, yRadius = 11 },
+      strokeColor = { white = 1, alpha = 0.1 },
+      strokeWidth = 1,
+      fillColor = { red = 0.95, green = 0.23, blue = 0.19, alpha = 1 },
+    }
+    pill[3] = { -- inner recording dot
       type = "circle",
-      center = { x = 19, y = PILL_H / 2 },
-      radius = 4,
+      center = { x = 25, y = PILL_H / 2 },
+      radius = 5,
       action = "fill",
       fillColor = { red = 0.95, green = 0.23, blue = 0.19, alpha = 1 },
     }
-    pill[3] = { -- transcript text
+    pill[4] = { -- transcript text
       type = "text",
-      frame = { x = 32, y = (PILL_H - 20) / 2 - 1, w = 112, h = 22 },
+      frame = { x = 48, y = (PILL_H - 24) / 2 - 1, w = 280, h = 26 },
       text = "",
-      textSize = 13,
+      textSize = 14,
       textColor = { white = 1, alpha = 0.95 },
       textLineBreak = "truncateHead", -- keep the most recent words visible
     }
     for i = 1, METER_BARS do
-      pill[3 + i] = {
+      pill[4 + i] = {
         type = "rectangle",
         action = "fill",
         frame = {
-          x = METER_START + ((i - 1) * 10),
-          y = (PILL_H - 4) / 2,
-          w = 5,
-          h = 4,
+          x = METER_START + ((i - 1) * 11),
+          y = (PILL_H - 5) / 2,
+          w = 6,
+          h = 5,
         },
-        roundedRectRadii = { xRadius = 2.5, yRadius = 2.5 },
-        fillColor = { white = 1, alpha = 0.18 },
+        roundedRectRadii = { xRadius = 3, yRadius = 3 },
+        fillColor = { red = 0.35, green = 0.78, blue = 1, alpha = 0.16 },
       }
     end
   end
@@ -250,23 +274,27 @@ local function showPill(text, live)
     pill:frame(pillFrame())
   end
   pill[2].fillColor =
-    { red = 0.95, green = 0.23, blue = 0.19, alpha = live and 1 or 0.35 }
-  pill[3].text = text
-  pill[3].textColor = { white = 1, alpha = live and 0.95 or 0.6 }
+    live and { red = 0.95, green = 0.23, blue = 0.19, alpha = 1 }
+      or { red = 0.22, green = 0.26, blue = 0.31, alpha = 1 }
+  pill[3].fillColor =
+    live and { red = 1, green = 1, blue = 1, alpha = 0.92 }
+      or { red = 0.35, green = 0.78, blue = 1, alpha = 0.9 }
+  pill[4].text = text
+  pill[4].textColor = { white = 1, alpha = live and 0.96 or 0.72 }
   for i = 1, METER_BARS do
-    local bar = pill[3 + i]
+    local bar = pill[4 + i]
     local threshold = i / METER_BARS
     local lit = live and config.showInputLevel and currentLevel >= threshold
-    local height = lit and (6 + (i % 4) * 4) or 4
+    local height = lit and (8 + (i % 4) * 4) or 5
     bar.frame = {
-      x = METER_START + ((i - 1) * 10),
+      x = METER_START + ((i - 1) * 11),
       y = (PILL_H - height) / 2,
-      w = 5,
+      w = 6,
       h = height,
     }
     bar.fillColor = lit
       and { red = 0.35, green = 0.78, blue = 1, alpha = 0.86 }
-      or { white = 1, alpha = live and 0.18 or 0.08 }
+      or { red = 0.35, green = 0.78, blue = 1, alpha = live and 0.18 or 0.1 }
   end
   if not pillVisible then
     pill:show()
@@ -277,7 +305,7 @@ end
 local function updatePillLevel(level)
   currentLevel = math.max(0, math.min(1, tonumber(level) or 0))
   if pillVisible and state == "recording" then
-    showPill(pill[3].text or "Listening", true)
+    showPill(pill[4].text or "Listening", true)
   end
 end
 
@@ -637,6 +665,38 @@ local function play(name)
   if s then s:play() end
 end
 
+local function deviceFields(dev)
+  if not dev then return {} end
+  return {
+    input = dev:name(),
+    uid = dev:uid(),
+  }
+end
+
+local function quarantineInputDevice(dev, reason)
+  if not dev then return end
+  local uid = dev:uid()
+  if not uid then return end
+  local untilTs = hs.timer.secondsSinceEpoch()
+    + (config.deviceFailureCooldownSeconds or 45)
+  deviceFailureUntil[uid] = untilTs
+  local fields = deviceFields(dev)
+  fields.reason = reason
+  fields.cooldownSeconds = config.deviceFailureCooldownSeconds
+  log.warn("temporarily avoiding input device", fields)
+end
+
+local function deviceAvailable(dev)
+  if not dev or dev:inputMuted() == true then return false end
+  local uid = dev:uid()
+  local blockedUntil = uid and deviceFailureUntil[uid] or nil
+  if blockedUntil and blockedUntil > hs.timer.secondsSinceEpoch() then
+    return false
+  end
+  if blockedUntil then deviceFailureUntil[uid] = nil end
+  return true
+end
+
 local function preferredInputDevice()
   local wantedNames = {}
   if type(config.preferredInputDevices) == "table" then
@@ -655,7 +715,7 @@ local function preferredInputDevice()
   local devices = hs.audiodevice.allInputDevices()
   for _, wanted in ipairs(wantedNames) do
     for _, dev in ipairs(devices) do
-      if dev:name() == wanted and dev:inputMuted() ~= true then
+      if dev:name() == wanted and deviceAvailable(dev) then
         return dev
       end
     end
@@ -663,17 +723,39 @@ local function preferredInputDevice()
   return nil
 end
 
-local function selectPreferredInput()
+local function setDefaultInputDevice(dev, reason)
+  local current = hs.audiodevice.defaultInputDevice()
+  if not dev then return false end
+  if current and current:uid() == dev:uid() then return false end
+
+  local ok, result = pcall(function()
+    return dev:setDefaultInputDevice()
+  end)
+  local after = hs.audiodevice.defaultInputDevice()
+  local stuck = after and after:uid() == dev:uid()
+  if not ok or not stuck then
+    local fields = deviceFields(dev)
+    fields.reason = reason
+    fields.result = result
+    fields.current = after and after:name() or nil
+    log.warn("preferred input did not stick", fields)
+    return false
+  end
+
+  log.info("default input changed", {
+    reason = reason,
+    from = current and current:name() or nil,
+    to = dev:name(),
+  })
+  return true
+end
+
+local function selectPreferredInput(reason)
   local current = hs.audiodevice.defaultInputDevice()
   local preferred = preferredInputDevice()
   if not preferred then return false end
   if current and current:uid() == preferred:uid() then return false end
-  preferred:setDefaultInputDevice()
-  log.info("selected preferred input", {
-    from = current and current:name() or nil,
-    to = preferred:name(),
-  })
-  return true
+  return setDefaultInputDevice(preferred, reason or "select preferred")
 end
 
 local function stopDaemonForInputSwitch()
@@ -683,6 +765,7 @@ local function stopDaemonForInputSwitch()
     task = nil
     daemonReady = false
     stdoutBuf = ""
+    if disarmStartWatchdog then disarmStartWatchdog() end
     old:terminate()
   end
 end
@@ -692,20 +775,22 @@ local function ensurePreferredInput(allowRestart)
   local preferred = preferredInputDevice()
   if not preferred then return false end
   if current and current:uid() == preferred:uid() then return false end
+
   if task and not allowRestart then
-    log.warn("preferred input drifted while daemon hot; leaving daemon stable", {
-      from = current and current:name() or nil,
-      preferred = preferred:name(),
-    })
+    if setDefaultInputDevice(preferred, "daemon hot reassert") then
+      inputSwitchCooldownUntil = hs.timer.secondsSinceEpoch()
+        + (config.inputSwitchCooldownSeconds or 8.0)
+      log.warn("preferred input drifted while daemon hot; reasserted without restart", {
+        from = current and current:name() or nil,
+        preferred = preferred:name(),
+      })
+    end
     return false
   end
+
   stopDaemonForInputSwitch()
-  preferred:setDefaultInputDevice()
-  log.info("default input changed", {
-    from = current and current:name() or nil,
-    to = preferred:name(),
-  })
-  return true
+  return setDefaultInputDevice(preferred,
+    allowRestart and "begin/restart" or "idle")
 end
 
 local function maintainPreferredInput()
@@ -720,7 +805,7 @@ local function maintainPreferredInput()
   end
   local changed = ensurePreferredInput(false)
   if changed then
-    inputSwitchCooldownUntil = now + 3.0
+    inputSwitchCooldownUntil = now + (config.inputSwitchCooldownSeconds or 8.0)
     log.info("input watcher changed device; respawning daemon after debounce")
     hs.timer.doAfter(1.5, function()
       if state == "idle" then spawnDaemon() end
@@ -790,7 +875,11 @@ local function pasteTranscript(text)
   if config.smartSpacing and text:match("^[%w\"'(]") and needsLeadingSpace() then
     text = " " .. text
   end
-  log.info("pasting transcript", transcriptLogFields(text))
+  local pasteQueuedAtMs = nowMs()
+  local fields = transcriptLogFields(text)
+  fields.finalizeMs = lastFinalizeMs
+  fields.takeMs = lastTakeMs
+  log.info("pasting transcript", fields)
   local restoreTo = nil
   if not config.keepOnClipboard then
     restoreTo = savedClipboard
@@ -800,6 +889,11 @@ local function pasteTranscript(text)
     hs.eventtap.keyStroke({ "cmd" }, "v", 0)
     local app = hs.application.frontmostApplication()
     lastPasteApp = app and app:name() or nil
+    lastPasteQueueMs = elapsedMs(pasteQueuedAtMs)
+    log.info("paste keystroke sent", {
+      app = lastPasteApp,
+      pasteQueueMs = lastPasteQueueMs,
+    })
     -- Our own synthetic ⌘V trips the typed-flag; clear it once it lands.
     hs.timer.doAfter(0.3, function() typedSinceLastPaste = false end)
     if restoreTo then
@@ -852,6 +946,13 @@ local function handleDictationCommand(text)
   return false
 end
 
+local function shouldPolishTranscript(text)
+  if not config.autoRefine then return false, "disabled" end
+  if #text < (config.autoRefineMinChars or 0) then return false, "short_chars" end
+  if wordCount(text) < (config.autoRefineMinWords or 0) then return false, "short_words" end
+  return true, nil
+end
+
 -- Deliver a finished transcript: run it through the LLM refiner when
 -- enabled (pill shows progress), pasting the raw text on any failure or
 -- timeout so words are never lost — just less polished.
@@ -870,17 +971,23 @@ local function deliverTranscript(text)
   end
   if handleDictationCommand(text) then return end
   local refine = nil
-  if config.autoRefine and #text >= config.autoRefineMinChars then
+  local shouldPolish, skipReason = shouldPolishTranscript(text)
+  if shouldPolish then
     local ok, mod = pcall(require, "refine")
     if ok and type(mod) == "table" and type(mod.refineText) == "function" then
       refine = mod
+    else
+      skipReason = ok and "refine_unavailable" or tostring(mod)
     end
   end
   if not refine then
     log.info("pasting without polish", {
       autoRefine = config.autoRefine,
+      reason = skipReason,
       chars = #text,
       minChars = config.autoRefineMinChars,
+      words = wordCount(text),
+      minWords = config.autoRefineMinWords,
     })
     hidePill()
     play(config.soundStop)
@@ -889,7 +996,7 @@ local function deliverTranscript(text)
   end
 
   hs.pasteboard.setContents(text) -- raw backup while we wait
-  showPill("Refining...", false)
+  showPill("Polishing...", false)
   local polishStartMs = nowMs()
   log.info("starting dictation polish", transcriptLogFields(text))
 
@@ -972,6 +1079,7 @@ local function onExit(_, code)
   stopOnStarted = false
   stopReason = nil
   if stopWatchdog then stopWatchdog:stop(); stopWatchdog = nil end
+  if disarmStartWatchdog then disarmStartWatchdog() end
   if state ~= "idle" then
     local wasStopping = (state == "stopping")
     state = "idle"
@@ -1074,22 +1182,62 @@ local function restartDaemonSoon(reason, delay)
   hidePill()
   unbindEsc()
   disarmWatchdog()
-  if old then old:terminate() end
+  if disarmStartWatchdog then disarmStartWatchdog() end
+  if old then
+    local pid = old:pid()
+    old:terminate()
+    hs.timer.doAfter(1.0, function()
+      if pid and pid > 0 then
+        hs.execute("kill -9 " .. pid .. " 2>/dev/null")
+      end
+    end)
+  end
   hs.timer.doAfter(delay or 0.5, function()
     if state == "idle" then spawnDaemon() end
   end)
 end
 
-local function armWatchdog()
+disarmStartWatchdog = function()
+  if startWatchdog then
+    startWatchdog:stop()
+    startWatchdog = nil
+  end
+end
+
+local function armStartWatchdog()
+  disarmStartWatchdog()
+  startWatchdog = hs.timer.doAfter(config.startTimeout, function()
+    startWatchdog = nil
+    if state ~= "starting" then return end
+    local currentInput = hs.audiodevice.defaultInputDevice()
+    lastErrorMessage = "start timeout"
+    log.error("start watchdog fired", {
+      timeoutSeconds = config.startTimeout,
+      beginMs = elapsedMs(beginAtMs),
+      input = currentInput and currentInput:name() or nil,
+    })
+    restartDaemonSoon("start timeout", config.startRetryDelay)
+    hs.alert.show("Dictation mic reset — try again", 1.0)
+  end)
+end
+
+local function armWatchdog(timeoutSeconds)
   disarmWatchdog()
-  stopWatchdog = hs.timer.doAfter(config.stopTimeout, function()
+  local deadline = timeoutSeconds or config.stopTimeout
+  stopWatchdog = hs.timer.doAfter(deadline, function()
     stopWatchdog = nil
     if state ~= "stopping" then return end
     log.error("stop watchdog fired", {
       stopReason = stopReason,
+      timeoutSeconds = deadline,
       lastPartial = transcriptLogFields(lastPartial),
     })
+    local reason = stopReason
+    local wasCancel = (reason == "cancel")
+    local wasQuiet = cancelQuiet
     state = "idle"
+    stopReason = nil
+    cancelQuiet = false
     hidePill()
     unbindEsc()
     -- Detach the wedged daemon first so its exit callback is a no-op and
@@ -1106,11 +1254,13 @@ local function armWatchdog()
         end
       end)
     end
-    if stopReason == "finish" and lastPartial ~= "" then
+    if reason == "finish" and lastPartial ~= "" then
       play(config.soundStop)
       pasteTranscript(lastPartial)
     end
-    hs.alert.show("Dictation recovered (daemon restarted)", 1.2)
+    if not wasCancel or not wasQuiet then
+      hs.alert.show("Dictation recovered (daemon restarted)", 1.2)
+    end
     hs.timer.doAfter(0.5, function() spawnDaemon() end)
   end)
 end
@@ -1138,9 +1288,12 @@ handleEvent = function(event)
 
   elseif e == "started" then
     startedAtMs = nowMs()
+    lastStartLatencyMs = elapsedMs(beginAtMs)
+    lastErrorMessage = nil
+    disarmStartWatchdog()
     log.info("recording started", {
       handsFree = handsFree,
-      startLatencyMs = elapsedMs(beginAtMs),
+      startLatencyMs = lastStartLatencyMs,
     })
     state = "recording"
     play(config.soundStart)
@@ -1167,6 +1320,7 @@ handleEvent = function(event)
 
   elseif e == "final" then
     disarmWatchdog()
+    disarmStartWatchdog()
     state = "idle"
     handsFree = false
     unbindEsc()
@@ -1174,6 +1328,8 @@ handleEvent = function(event)
     local fields = transcriptLogFields(text)
     fields.finalizeMs = elapsedMs(finishAtMs)
     fields.takeMs = elapsedMs(beginAtMs)
+    lastFinalizeMs = fields.finalizeMs
+    lastTakeMs = fields.takeMs
     log.info("daemon final", fields)
     if text ~= "" then
       deliverTranscript(text) -- owns the pill + stop sound from here
@@ -1185,6 +1341,7 @@ handleEvent = function(event)
   elseif e == "canceled" then
     log.info("daemon canceled")
     disarmWatchdog()
+    disarmStartWatchdog()
     state = "idle"
     handsFree = false
     hidePill()
@@ -1195,14 +1352,20 @@ handleEvent = function(event)
     cancelQuiet = false
 
   elseif e == "error" then
-    log.error("daemon error", { message = event.message })
-    if tostring(event.message or ""):match("^mic start:")
-        or tostring(event.message or ""):match("^analyzer start:") then
-      restartDaemonSoon(event.message, 0.75)
+    local message = tostring(event.message or "")
+    lastErrorMessage = message
+    log.error("daemon error", { message = message, state = state })
+    if message:match("^mic start:")
+        or message:match("^analyzer start:")
+        or message:match("^prepare:")
+        or message:match("^rebuild:") then
+      local currentInput = hs.audiodevice.defaultInputDevice()
+      quarantineInputDevice(currentInput, message)
+      restartDaemonSoon(message, config.startRetryDelay)
       hs.alert.show("Dictation mic reset — try again", 1.2)
       return
     end
-    hs.alert.show("Dictation error: " .. tostring(event.message),
+    hs.alert.show("Dictation error: " .. message,
       config.alertDuration + 1)
   end
 end
@@ -1218,10 +1381,14 @@ function M.begin()
   beginAtMs = nowMs()
   startedAtMs = nil
   finishAtMs = nil
+  lastFinalizeMs = nil
+  lastTakeMs = nil
+  lastPasteQueueMs = nil
+  lastErrorMessage = nil
   log.info("begin requested", { state = state, daemonReady = daemonReady })
-  if ensurePreferredInput() then
+  if ensurePreferredInput(true) then
     pendingStart = true
-    hs.timer.doAfter(1.0, function()
+    hs.timer.doAfter(config.startRetryDelay or 0.35, function()
       if pendingStart and state == "idle" then M.begin() end
     end)
     return
@@ -1241,6 +1408,7 @@ function M.begin()
   state = "starting"
   bindEsc()
   log.info("sending start")
+  armStartWatchdog()
   send("start")
 end
 
@@ -1276,7 +1444,8 @@ function M.cancel(quiet)
   cancelQuiet = quiet or false
   state = "stopping"
   stopReason = "cancel"
-  armWatchdog()
+  disarmStartWatchdog()
+  armWatchdog(config.cancelTimeout)
   send("cancel")
 end
 
@@ -1392,6 +1561,10 @@ function M.start()
   end
   log.info("started", {
     autoRefine = config.autoRefine,
+    autoRefineMinChars = config.autoRefineMinChars,
+    autoRefineMinWords = config.autoRefineMinWords,
+    autoRefineTimeout = config.autoRefineTimeout,
+    cancelTimeout = config.cancelTimeout,
     punctuation = config.punctuation,
     voiceCommands = config.voiceCommands,
     longDictationPolish = config.longDictationPolish,
@@ -1413,12 +1586,26 @@ end
 -- Debug/introspection: current state of the module and daemon.
 function M.status()
   local input = hs.audiodevice.defaultInputDevice()
+  local preferred = preferredInputDevice()
   return {
     state = state,
     daemonRunning = task ~= nil,
     daemonReady = daemonReady,
     handsFree = handsFree,
     inputDevice = input and input:name() or nil,
+    preferredInputDevice = preferred and preferred:name() or nil,
+    autoRefine = config.autoRefine,
+    autoRefineTimeout = config.autoRefineTimeout,
+    autoRefineMinChars = config.autoRefineMinChars,
+    autoRefineMinWords = config.autoRefineMinWords,
+    cancelTimeout = config.cancelTimeout,
+    punctuation = config.punctuation,
+    voiceCommands = config.voiceCommands,
+    lastError = lastErrorMessage,
+    lastStartLatencyMs = lastStartLatencyMs,
+    lastFinalizeMs = lastFinalizeMs,
+    lastTakeMs = lastTakeMs,
+    lastPasteQueueMs = lastPasteQueueMs,
   }
 end
 

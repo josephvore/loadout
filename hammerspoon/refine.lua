@@ -23,9 +23,8 @@ local config = {
   -- This project has access to the GPT-5 family only.
   --   model           — manual Caps+C / Caps+S. gpt-5.4 edits best (cuts
   --                     filler, not just grammar) at ~1.4-2.4s.
-  --   autoRefineModel — optional dictation cleanup. Dictation no longer runs
-  --                     this by default because release→paste needs to be
-  --                     immediate; keep it available for explicit cleanup.
+  --   autoRefineModel — default dictation cleanup. Keep this on the faster
+  --                     model because it runs on the release-to-paste path.
   model = "gpt-5.4",
   autoRefineModel = "gpt-5.4-mini",
   reasoningEffort = "none", -- fastest; gpt-5.4 supports none/low/medium/high/xhigh
@@ -48,17 +47,23 @@ local config = {
     .. "and understanding without changing its meaning or intent. "
     .. "Return only the refined text — no preamble, no quotes, no commentary.",
 
-  -- Dictation cleanup: keep this much more conservative than the generic
-  -- refine path. The raw transcript should still sound like the speaker.
+  -- Dictation cleanup: Wispr Flow-style paste-ready text. Preserve intent and
+  -- tone, but do not preserve speech artifacts just because they were spoken.
   dictationPrompt =
-    "You are lightly cleaning raw speech-to-text dictation. Preserve the exact "
-    .. "wording, repetitions, rambling structure, meaning, and tone. Do not "
-    .. "rewrite, summarize, tighten, remove filler, or add new ideas. Fix only "
-    .. "clear speech-recognition mistakes and glossary terms when the intended "
-    .. "word is obvious. Use minimal punctuation: avoid commas unless required "
-    .. "for basic grammar, and do not insert punctuation merely because the "
-    .. "speaker paused or changed pace. Return only the cleaned text: no "
-    .. "preamble, no quotes, no commentary.",
+    "You are the cleanup engine for a Wispr Flow-style dictation app. Convert "
+    .. "raw speech-to-text into the text the speaker meant to paste after a "
+    .. "quick edit. Preserve the speaker's meaning, factual details, names, "
+    .. "numbers, urgency, and tone, but do not preserve literal wording when it "
+    .. "is just speech noise. Aggressively remove filler, false starts, meta "
+    .. "narration, duplicated phrases, and self-corrections. Collapse repeated "
+    .. "points into one clear statement. Do not repeat the same criticism or "
+    .. "request twice; keep the strongest single version. Fix speech-recognition "
+    .. "mistakes, capitalization, punctuation, paragraphing, and obvious grammar. "
+    .. "If the raw transcript is a rant, complaint, or instruction, turn it into "
+    .. "a clear direct message with the same force, usually as one concise "
+    .. "paragraph. Keep short fragments short. Do not add new claims, do not "
+    .. "answer the speaker, and do not sanitize profanity or frustration. Return "
+    .. "only the final polished text: no preamble, no quotes, no commentary.",
 
   -- Caps-held bindings (require QuickShots' registerCapsAction).
   capsClipboard = { {}, "c" },

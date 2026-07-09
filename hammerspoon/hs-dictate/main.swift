@@ -38,6 +38,19 @@ import AVFoundation
 import Foundation
 import Speech
 
+// Resume a timeout race once. The losing task may be stuck inside an Apple
+// API; it must not keep the caller waiting.
+actor TimeoutRace {
+    private var finished = false
+
+    func resume(_ continuation: CheckedContinuation<Bool, Never>,
+                value: Bool) {
+        guard !finished else { return }
+        finished = true
+        continuation.resume(returning: value)
+    }
+}
+
 // MARK: - stdout JSON events
 
 func emit(_ obj: [String: String]) {
@@ -48,6 +61,13 @@ func emit(_ obj: [String: String]) {
 }
 
 func emitError(_ message: String) { emit(["event": "error", "message": message]) }
+
+func audioFormatsMatch(_ a: AVAudioFormat, _ b: AVAudioFormat) -> Bool {
+    abs(a.sampleRate - b.sampleRate) < 0.5
+        && a.channelCount == b.channelCount
+        && a.commonFormat == b.commonFormat
+        && a.isInterleaved == b.isInterleaved
+}
 
 // MARK: - Dictation engine
 
@@ -77,8 +97,8 @@ actor Dictator {
     // finalize flushes the last words of a take, but the OS call has been
     // seen to hang; never make the user wait longer than this — the
     // streamed text is already in hand.
-    private let finalizeTimeout = 1.4
-    private let stopTailGraceMs: UInt64 = 220
+    private let finalizeTimeout = 1.0
+    private let stopTailGraceMs: UInt64 = 140
 
     // Shared with the (nonisolated) tap callback. converter/format are only
     // mutated while the engine is stopped; continuation flips at take
@@ -163,8 +183,7 @@ actor Dictator {
         // Device may have changed while the engine was idle-stopped; the tap
         // must match the live input format.
         if tapInstalled, let tf = tapFormat,
-           tf.sampleRate != micFormat.sampleRate
-               || tf.channelCount != micFormat.channelCount {
+           !audioFormatsMatch(tf, micFormat) {
             input.removeTap(onBus: 0)
             tapInstalled = false
         }
@@ -187,14 +206,24 @@ actor Dictator {
             convParams = (converter, analyzerFormat, convParams.continuation)
 
             // Small buffers (~21 ms at 48 kHz) keep partials snappy and lose
-            // less tail audio when a take stops.
-            input.installTap(onBus: 0, bufferSize: 1024, format: micFormat) {
+            // less tail audio when a take stops. Passing nil lets CoreAudio use
+            // the live device format; passing a stale explicit format can abort
+            // the process with an Objective-C AVAudioEngine exception.
+            input.installTap(onBus: 0, bufferSize: 1024, format: nil) {
                 [weak self] buffer, _ in
                 guard let self else { return }
                 let params = self.convParams
                 guard let continuation = params.continuation,
-                      let converter = params.converter,
                       let outFormat = params.format else { return }
+                var converter = params.converter
+                if converter == nil
+                    || !audioFormatsMatch(converter!.inputFormat, buffer.format) {
+                    guard let rebuilt = AVAudioConverter(from: buffer.format,
+                                                         to: outFormat) else { return }
+                    self.convParams.converter = rebuilt
+                    converter = rebuilt
+                }
+                guard let activeConverter = converter else { return }
                 let ratio = outFormat.sampleRate / buffer.format.sampleRate
                 let capacity =
                     AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 16
@@ -202,7 +231,7 @@ actor Dictator {
                     pcmFormat: outFormat, frameCapacity: capacity) else { return }
                 var err: NSError?
                 var fed = false
-                converter.convert(to: out, error: &err) { _, status in
+                activeConverter.convert(to: out, error: &err) { _, status in
                     if fed {
                         status.pointee = .noDataNow
                         return nil
@@ -394,22 +423,35 @@ actor Dictator {
     // the caller's job, off the critical path. Returns false on timeout.
     private func finalizeWithTimeout(_ seconds: Double) async -> Bool {
         guard let analyzer else { return true }
-        return await withTaskGroup(of: Bool.self) { group in
-            group.addTask {
-                try? await analyzer.finalizeAndFinishThroughEndOfInput()
-                // Give the results loop a beat to consume the finals that
-                // finalize just produced before bestText() is read.
-                try? await Task.sleep(for: .milliseconds(50))
-                return true
-            }
-            group.addTask {
-                try? await Task.sleep(for: .seconds(seconds))
-                return false
-            }
-            let winner = await group.next() ?? false
-            group.cancelAll()
-            return winner
+        let finalizeTask = Task {
+            try? await analyzer.finalizeAndFinishThroughEndOfInput()
+            // Give the results loop a beat to consume the finals that
+            // finalize just produced before bestText() is read.
+            try? await Task.sleep(for: .milliseconds(50))
+            return true
         }
+        let timeoutTask = Task {
+            try? await Task.sleep(for: .seconds(seconds))
+            return false
+        }
+        let race = TimeoutRace()
+
+        let winner = await withCheckedContinuation { continuation in
+            Task {
+                await race.resume(continuation,
+                                  value: await finalizeTask.value)
+            }
+            Task {
+                await race.resume(continuation,
+                                  value: await timeoutTask.value)
+            }
+        }
+        if winner {
+            timeoutTask.cancel()
+        } else {
+            finalizeTask.cancel()
+        }
+        return winner
     }
 
     func stop() async {
