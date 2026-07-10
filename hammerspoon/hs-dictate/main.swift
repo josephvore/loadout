@@ -53,9 +53,13 @@ actor TimeoutRace {
 
 // MARK: - stdout JSON events
 
-func emit(_ obj: [String: String]) {
+private let emitLock = NSLock()
+
+func emit(_ obj: [String: Any]) {
     guard let data = try? JSONSerialization.data(withJSONObject: obj),
           let line = String(data: data, encoding: .utf8) else { return }
+    emitLock.lock()
+    defer { emitLock.unlock() }
     print(line)
     fflush(stdout)
 }
@@ -76,6 +80,10 @@ actor Dictator {
     private let fastResults: Bool
     private let punctuation: Bool
     private let micIdleSeconds: Double
+    private let glossaryPath: String?
+    private let correctionsPath: String?
+    private let farField: Bool
+    private var contextTerms: [String] = []
 
     private var analyzer: SpeechAnalyzer?
     private var transcriber: DictationTranscriber?
@@ -106,18 +114,23 @@ actor Dictator {
     nonisolated(unsafe) private var convParams:
         (converter: AVAudioConverter?, format: AVAudioFormat?,
          continuation: AsyncStream<AnalyzerInput>.Continuation?) = (nil, nil, nil)
+    nonisolated(unsafe) private var lastLevelEmit = 0.0
 
     init(locale: Locale, fastResults: Bool, punctuation: Bool,
-         micIdleSeconds: Double) {
+         micIdleSeconds: Double, glossaryPath: String?,
+         correctionsPath: String?, farField: Bool) {
         self.locale = locale
         self.fastResults = fastResults
         self.punctuation = punctuation
         self.micIdleSeconds = micIdleSeconds
+        self.glossaryPath = glossaryPath
+        self.correctionsPath = correctionsPath
+        self.farField = farField
     }
 
     private func makeTranscriber() -> DictationTranscriber {
         var preset = DictationTranscriber.Preset.progressiveLongDictation
-        preset.contentHints.insert(.farField)
+        if farField { preset.contentHints.insert(.farField) }
         preset.transcriptionOptions.remove(.punctuation)
         preset.transcriptionOptions.remove(.emoji)
         preset.transcriptionOptions.remove(.etiquetteReplacements)
@@ -215,6 +228,22 @@ actor Dictator {
                 let params = self.convParams
                 guard let continuation = params.continuation,
                       let outFormat = params.format else { return }
+                let now = ProcessInfo.processInfo.systemUptime
+                if now - self.lastLevelEmit >= (1.0 / 15.0),
+                   let channels = buffer.floatChannelData,
+                   buffer.frameLength > 0 {
+                    let samples = channels[0]
+                    var sum: Float = 0
+                    for i in 0..<Int(buffer.frameLength) {
+                        let value = samples[i]
+                        sum += value * value
+                    }
+                    let rms = sqrt(sum / Float(buffer.frameLength))
+                    let db = 20 * log10(max(rms, 0.000_001))
+                    let level = max(0, min(1, (Double(db) + 55) / 45))
+                    self.lastLevelEmit = now
+                    emit(["event": "level", "value": level])
+                }
                 var converter = params.converter
                 if converter == nil
                     || !audioFormatsMatch(converter!.inputFormat, buffer.format) {
@@ -505,11 +534,84 @@ actor Dictator {
         await stop()
     }
 
+    func reloadContext() async {
+        guard let analyzer else { return }
+        do {
+            try await installContext(on: analyzer)
+            emit(["event": "context", "count": contextTerms.count])
+        } catch {
+            emitError("reload context: \(error.localizedDescription)")
+        }
+    }
+
+    func readyFields() -> [String: Any] {
+        ["event": "ready", "contextCount": contextTerms.count]
+    }
+
+    private func canonicalTerm(_ line: String) -> String? {
+        let comment = line.firstIndex(of: "#") ?? line.endIndex
+        let cleaned = line[..<comment]
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty else { return nil }
+        for separator in ["=>", "="] {
+            if let range = cleaned.range(of: separator) {
+                let value = cleaned[..<range.lowerBound]
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                return value.isEmpty ? nil : value
+            }
+        }
+        return cleaned
+    }
+
+    private func correctionTarget(_ line: String) -> String? {
+        let comment = line.firstIndex(of: "#") ?? line.endIndex
+        let cleaned = line[..<comment]
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        for separator in ["\t", "=>"] {
+            if let range = cleaned.range(of: separator) {
+                let value = cleaned[range.upperBound...]
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                return value.isEmpty ? nil : value
+            }
+        }
+        return nil
+    }
+
+    private func loadContextTerms() -> [String] {
+        var terms: [String] = []
+        var seen = Set<String>()
+        func add(_ term: String?) {
+            guard terms.count < 100, let term else { return }
+            let key = term.lowercased()
+            guard !key.isEmpty, seen.insert(key).inserted else { return }
+            terms.append(term)
+        }
+        if let glossaryPath,
+           let contents = try? String(contentsOfFile: glossaryPath, encoding: .utf8) {
+            contents.enumerateLines { line, _ in add(self.canonicalTerm(line)) }
+        }
+        if let correctionsPath,
+           let contents = try? String(contentsOfFile: correctionsPath, encoding: .utf8) {
+            for line in contents.components(separatedBy: .newlines).reversed() {
+                add(correctionTarget(line))
+            }
+        }
+        return terms
+    }
+
+    private func installContext(on analyzer: SpeechAnalyzer) async throws {
+        contextTerms = loadContextTerms()
+        let context = AnalysisContext()
+        context.contextualStrings[.general] = contextTerms
+        try await analyzer.setContext(context)
+    }
+
     private func rebuild() async throws {
         let transcriber = makeTranscriber()
         self.transcriber = transcriber
         let analyzer = SpeechAnalyzer(modules: [transcriber])
         self.analyzer = analyzer
+        try await installContext(on: analyzer)
         self.analyzerFormat = await SpeechAnalyzer.bestAvailableAudioFormat(
             compatibleWith: [transcriber])
         if tapInstalled,
@@ -530,6 +632,9 @@ var localeID = "en_US"
 var fastResults = false
 var punctuation = false
 var micIdleSeconds = 180.0
+var glossaryPath: String?
+var correctionsPath: String?
+var farField = false
 
 var argi = 1
 let argv = CommandLine.arguments
@@ -542,6 +647,15 @@ while argi < argv.count {
     case "--idle":
         argi += 1
         if argi < argv.count { micIdleSeconds = Double(argv[argi]) ?? 180.0 }
+    case "--glossary":
+        argi += 1
+        if argi < argv.count { glossaryPath = argv[argi] }
+    case "--corrections":
+        argi += 1
+        if argi < argv.count { correctionsPath = argv[argi] }
+    case "--content-hint":
+        argi += 1
+        if argi < argv.count { farField = argv[argi] == "far-field" }
     default:
         localeID = argv[argi]
     }
@@ -551,7 +665,10 @@ while argi < argv.count {
 let dictator = Dictator(locale: Locale(identifier: localeID),
                         fastResults: fastResults,
                         punctuation: punctuation,
-                        micIdleSeconds: micIdleSeconds)
+                        micIdleSeconds: micIdleSeconds,
+                        glossaryPath: glossaryPath,
+                        correctionsPath: correctionsPath,
+                        farField: farField)
 
 // Request mic permission up front so the TCC prompt (attributed to
 // Hammerspoon when spawned from hs.task) happens at load, not first use.
@@ -568,7 +685,7 @@ do {
     exit(1)
 }
 
-emit(["event": "ready"])
+emit(await dictator.readyFields())
 
 // Command loop: read stdin lines forever. readLine blocks, so run it off
 // the main actor and forward commands.
@@ -577,6 +694,7 @@ while let line = readLine(strippingNewline: true) {
     case "start":  await dictator.start()
     case "stop":   await dictator.stop()
     case "cancel": await dictator.cancel()
+    case "reload-context": await dictator.reloadContext()
     case "quit":   exit(0)
     case "":       continue
     default:       emitError("unknown command: \(line)")

@@ -26,7 +26,8 @@ local config = {
   --   autoRefineModel — default dictation cleanup. Keep this on the faster
   --                     model because it runs on the release-to-paste path.
   model = "gpt-5.4",
-  autoRefineModel = "gpt-5.4-mini",
+  autoRefineModel = "gpt-5.6-luna",
+  autoRefineFallbackModel = "gpt-5.4-mini",
   reasoningEffort = "none", -- fastest; gpt-5.4 supports none/low/medium/high/xhigh
   temperature = nil, -- GPT-5 models reject non-default temperature; e.g. 0.3 for gpt-4.1-mini
 
@@ -88,6 +89,7 @@ local config = {
 -- API KEY (Keychain, cached after first read)
 ----------------------------------------------------------------
 local cachedKey = nil
+local dictationFallbackUsed = false
 
 local function apiKey()
   if cachedKey then return cachedKey end
@@ -109,6 +111,20 @@ end
 --   model        override config.model (e.g. the faster auto-refine model)
 --   systemPrompt override config.prompt (e.g. the dictation cleanup prompt)
 -- onFail(message) is optional; when given, failures are reported through it.
+local function responseText(parsed)
+  if type(parsed) ~= "table" then return nil end
+  if type(parsed.output_text) == "string" then return parsed.output_text end
+  local chunks = {}
+  for _, item in ipairs(parsed.output or {}) do
+    for _, content in ipairs(item.content or {}) do
+      if content.type == "output_text" and type(content.text) == "string" then
+        chunks[#chunks + 1] = content.text
+      end
+    end
+  end
+  return #chunks > 0 and table.concat(chunks, "") or nil
+end
+
 local function callOpenAI(text, onDone, onFail, opts)
   opts = opts or {}
   local quiet = opts.quiet
@@ -124,23 +140,22 @@ local function callOpenAI(text, onDone, onFail, opts)
     return
   end
 
-  local body = hs.json.encode({
-    model = opts.model or config.model,
-    temperature = config.temperature,
-    reasoning_effort = config.reasoningEffort,
-    messages = {
-      { role = "system", content = opts.systemPrompt or config.prompt },
-      { role = "user",   content = text },
-    },
-  })
-
   local model = opts.model or config.model
   local mode = opts.mode or (quiet and "programmatic" or "manual")
+  local body = hs.json.encode({
+    model = model,
+    instructions = opts.systemPrompt or config.prompt,
+    input = hs.json.encode({ transcript = text }),
+    reasoning = { effort = config.reasoningEffort },
+    text = { verbosity = "low" },
+    max_output_tokens = opts.maxOutputTokens,
+    store = false,
+  })
   log.info("openai request", { mode = mode, model = model, chars = #text })
 
   if not quiet then hs.alert.show("✍️ Refining…", 1.0) end
 
-  hs.http.asyncPost("https://api.openai.com/v1/chat/completions", body, {
+  hs.http.asyncPost("https://api.openai.com/v1/responses", body, {
     ["Authorization"] = "Bearer " .. key,
     ["Content-Type"]  = "application/json",
   }, function(status, responseBody)
@@ -150,6 +165,22 @@ local function callOpenAI(text, onDone, onFail, opts)
       if ok and type(parsed) == "table"
         and parsed.error and parsed.error.message then
         msg = msg .. ": " .. parsed.error.message
+      end
+      local modelUnavailable = mode == "dictation"
+        and model == config.autoRefineModel
+        and not dictationFallbackUsed
+        and (status == 400 or status == 404 or msg:lower():find("model", 1, true))
+      if modelUnavailable then
+        dictationFallbackUsed = true
+        log.warn("dictation model unavailable; using session fallback", {
+          model = model, fallback = config.autoRefineFallbackModel, message = msg,
+        })
+        local retry = {}
+        for k, v in pairs(opts) do retry[k] = v end
+        retry.model = config.autoRefineFallbackModel
+        retry.fallbackReason = msg
+        callOpenAI(text, onDone, onFail, retry)
+        return
       end
       log.error("openai request failed", {
         mode = mode,
@@ -165,9 +196,7 @@ local function callOpenAI(text, onDone, onFail, opts)
     end
 
     local ok, parsed = pcall(hs.json.decode, responseBody)
-    local result = ok and type(parsed) == "table"
-      and parsed.choices and parsed.choices[1]
-      and parsed.choices[1].message and parsed.choices[1].message.content
+    local result = ok and responseText(parsed)
     if type(result) ~= "string" or result:match("^%s*$") then
       log.error("openai empty response", { mode = mode, model = model })
       if onFail then onFail("empty response") end
@@ -184,7 +213,7 @@ local function callOpenAI(text, onDone, onFail, opts)
       inputChars = #text,
       outputChars = #result,
     })
-    onDone(result)
+    onDone(result, { model = model, fallbackReason = opts.fallbackReason })
   end)
 end
 
@@ -258,11 +287,13 @@ end
 -- pasting — the caller owns the UI. onFail(message) fires on any failure.
 -- Used by dictation.lua's autoRefine — runs the faster autoRefineModel with
 -- the dictation-cleanup prompt (+ glossary), not the generic Caps+C prompt.
-function M.refineText(text, onDone, onFail)
+function M.refineText(text, onDone, onFail, opts)
+  opts = opts or {}
   callOpenAI(text, onDone, onFail, {
     quiet = true,
-    model = config.autoRefineModel,
-    systemPrompt = dictationSystemPrompt(),
+    model = opts.model or config.autoRefineModel,
+    systemPrompt = opts.systemPrompt or dictationSystemPrompt(),
+    maxOutputTokens = opts.maxOutputTokens,
     mode = "dictation",
   })
 end

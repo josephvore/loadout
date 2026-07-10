@@ -99,6 +99,21 @@ local REGISTRY = {
     desc  = "Hold Right⌘ while speaking, release to paste — or tap it for hands-free and tap "
       .. "again to stop. Esc cancels. Rebind only to modifier keys (rightcmd, rightalt, …)",
     run   = function(m) m.toggle() end },
+  { id = "dictation.profile.auto", module = "dictation", kind = "action",
+    label = "Profile: Auto", desc = "Route messages to Message and everything else to Prompt",
+    run = function(m) m.setProfile("Auto") end },
+  { id = "dictation.profile.prompt", module = "dictation", kind = "action",
+    label = "Profile: Prompt", desc = "Preserve imperative, technical, and code-like dictation",
+    run = function(m) m.setProfile("Prompt") end },
+  { id = "dictation.profile.message", module = "dictation", kind = "action",
+    label = "Profile: Message", desc = "Light grammar and paragraph cleanup for messages",
+    run = function(m) m.setProfile("Message") end },
+  { id = "dictation.profile.literal", module = "dictation", kind = "action",
+    label = "Profile: Literal", desc = "Disable AI and Apple automatic punctuation",
+    run = function(m) m.setProfile("Literal") end },
+  { id = "dictation.learn", module = "dictation", kind = "action",
+    label = "Learn correction", desc = "Save a wrong/right correction and reload recognition context",
+    run = function(m) m.promptCorrection() end },
 
   -- Refine — OpenAI text refinement.
   { id = "refine.clipboard", module = "refine", path = { "capsClipboard" }, kind = "caps",
@@ -227,15 +242,16 @@ function M.buildData()
     local rows = {}
     for _, e in ipairs(REGISTRY) do
       if e.module == mod then
-        local b = currentBinding(e)
+        local b = e.kind == "action" and {} or currentBinding(e)
         if b then
           rows[#rows + 1] = {
             id = e.id,
             kind = e.kind,
-            combo = comboLabel(e.kind, b),
+            combo = e.kind == "action" and "Action" or comboLabel(e.kind, b),
             label = e.label,
             desc = e.desc,
             custom = overrides[e.id] ~= nil,
+            action = e.kind == "action",
           }
         end
       end
@@ -346,14 +362,14 @@ function render() {
     for (const r of s.rows) {
       html += '<div class="row" id="row-' + esc(r.id) + '" data-id="' + esc(r.id) + '"' +
               ' data-search="' + esc((r.label + ' ' + r.desc + ' ' + r.combo).toLowerCase()) + '">';
-      html += '<kbd onclick="startListen(\'' + esc(r.id) + '\')">' + esc(r.combo) + '</kbd>';
+      html += '<kbd' + (r.action ? '' : ' onclick="startListen(\'' + esc(r.id) + '\')"') + '>' + esc(r.combo) + '</kbd>';
       html += '<div class="txt"><div class="l">' + esc(r.label) +
               (r.custom ? '<span class="tag">custom</span>' : '') + '</div>' +
               '<div class="d">' + esc(r.desc) + '</div></div>';
       html += '<div class="btns">';
       html += '<button class="run" onclick="post({action:\'run\', id:\'' + esc(r.id) + '\'})">Run</button>';
-      html += '<button onclick="startListen(\'' + esc(r.id) + '\')">Rebind</button>';
-      if (r.custom) {
+      if (!r.action) html += '<button onclick="startListen(\'' + esc(r.id) + '\')">Rebind</button>';
+      if (r.custom && !r.action) {
         html += '<button class="reset" onclick="post({action:\'reset\', id:\'' + esc(r.id) + '\'})">Reset</button>';
       }
       html += '</div></div>';
@@ -364,6 +380,8 @@ function render() {
 }
 
 function startListen(id) {
+  const selected = rowById(id);
+  if (selected && selected.action) { post({action:'run', id:id}); return; }
   stopListen();
   listening = id;
   const row = document.getElementById('row-' + id);
@@ -520,7 +538,7 @@ local function handleMessage(msg)
     end
     local newSig = comboSig(entry.kind, mods, key)
     for _, other in ipairs(REGISTRY) do
-      if other.id ~= entry.id then
+      if other.id ~= entry.id and other.kind ~= "action" then
         local bnd = currentBinding(other)
         if bnd and comboSig(other.kind, bnd[1], bnd[2]) == newSig then
           respondJS({ ok = false, error = "That key is already bound to: " .. other.label })

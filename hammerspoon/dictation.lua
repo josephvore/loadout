@@ -21,6 +21,7 @@
 
 local M = {}
 local log = require("logging").new("dictation")
+local core = require("dictation_core")
 
 ----------------------------------------------------------------
 -- CONFIG — edit values to taste.
@@ -79,7 +80,7 @@ local config = {
   -- The cleaned transcript is copied to the clipboard immediately as backup;
   -- if polish fails or runs too long, raw text still pastes.
   autoRefine = true,
-  autoRefineTimeout = 8.0,   -- seconds to wait before pasting raw instead
+  autoRefineTimeout = 2.0,
   autoRefineMinChars = 12,   -- skip only tiny acknowledgements
   autoRefineMinWords = 4,
 
@@ -91,6 +92,7 @@ local config = {
   -- learned "wrong -> right" replacements in correctionMemoryPath.
   glossaryPath = os.getenv("HOME") .. "/dotfiles/hammerspoon/dictation_glossary.txt",
   correctionMemoryPath = os.getenv("HOME") .. "/dotfiles/hammerspoon/dictation_corrections.tsv",
+  snippetsPath = os.getenv("HOME") .. "/dotfiles/hammerspoon/dictation_snippets.tsv",
 
   -- Spoken editing commands: "new paragraph", "scratch that", "comma",
   -- "open quote", "send" (when dictated alone), etc.
@@ -114,7 +116,7 @@ local config = {
 
   -- Show a small live mic level meter in the pill. Disabled until the daemon
   -- has a crash-safe level source; the visual shell stays small and quiet.
-  showInputLevel = false,
+  showInputLevel = true,
 
   -- Insert a leading space when dictating right after existing text, so
   -- back-to-back takes read "…end of sentence. Next sentence" instead of
@@ -176,6 +178,16 @@ local lastTakeMs = nil
 local lastPasteQueueMs = nil
 local lastErrorMessage = nil
 local deviceFailureUntil = {}
+local profileOverride = hs.settings.get("dictation.profileOverride.v1") or "Auto"
+local activeProfile = "Prompt"
+local activeTarget = nil
+local takeSequence = 0
+local pendingDelivery = nil
+local contextTermCount = 0
+local lastTotalLatencyMs = nil
+local lastAILatencyMs = nil
+local lastAIModel = nil
+local lastAIReason = nil
 
 local function transcriptSample(text)
   if not config.logTranscriptSamples then return nil end
@@ -616,44 +628,12 @@ end
 
 local function cleanupTranscript(text)
   if not config.localCleanup then return text end
-  text = trim(text)
-  if text == "" then return text end
-
-  text = text
-    :gsub("[%c\r\n\t]+", " ")
-    :gsub("%s+", " ")
-  text = applyVoiceCommands(text)
-  text = applyPhraseReplacements(text)
-  text = polishLongDictation(text)
-
-  text = text
-    :gsub("%f[%a][Ii]%f[%A]", "I")
-    :gsub("%f[%a][Ii]'m%f[%A]", "I'm")
-    :gsub("%f[%a][Ii]'ve%f[%A]", "I've")
-    :gsub("%f[%a][Ii]'ll%f[%A]", "I'll")
-    :gsub("%f[%a][Ii]'d%f[%A]", "I'd")
-    :gsub("%f[%a][Ee]t cetera%.?", "etc.")
-    :gsub("%f[%a][Ee]tcetera%.?", "etc.")
-
-  -- Remove space before punctuation and normalize duplicated punctuation.
-  text = text
-    :gsub("[ \t]+([,%.%!%?%;:%)])", "%1")
-    :gsub("([%(])%s+", "%1")
-    :gsub("[ ]*\n[ ]*", "\n")
-    :gsub("\n%s*\n", "\n\n")
-    :gsub("([,%;:])%s*([,%;:%.%!%?])", "%2")
-    :gsub("%.%.+", ".")
-    :gsub("!!+", "!")
-    :gsub("%?%?+", "?")
-    :gsub("[ \t]+", " ")
-
-  if config.joinChoppyFragments then
-    text = joinChoppyParagraphs(text)
-  end
-
-  -- Cleanup can create "etc.." when the recognizer already supplied a period.
-  text = text:gsub("etc%.%.", "etc.")
-  return trim(text)
+  return core.cleanupTranscript(text, {
+    glossaryPath = config.glossaryPath,
+    correctionsPath = config.correctionMemoryPath,
+    snippetsPath = config.snippetsPath,
+    voiceCommands = config.voiceCommands,
+  })
 end
 
 ----------------------------------------------------------------
@@ -869,10 +849,27 @@ local function needsLeadingSpace()
   return name ~= nil and name == lastPasteApp and not typedSinceLastPaste
 end
 
-local function pasteTranscript(text)
+local function captureTarget()
+  local app = hs.application.frontmostApplication()
+  local focused = nil
+  pcall(function()
+    focused = hs.axuielement.systemWideElement():attributeValue("AXFocusedUIElement")
+  end)
+  return {
+    pid = app and app:pid() or nil,
+    app = app and app:name() or nil,
+    focusedField = focused,
+  }
+end
+
+local function pasteTranscript(text, target)
+  target = target or activeTarget
+  local front = hs.application.frontmostApplication()
+  local targetStillFront = target and front and target.pid == front:pid()
   -- Smart spacing: only when the transcript starts like prose (not when
   -- the user dictated leading punctuation).
-  if config.smartSpacing and text:match("^[%w\"'(]") and needsLeadingSpace() then
+  if targetStillFront and config.smartSpacing
+      and text:match("^[%w\"'(]") and needsLeadingSpace() then
     text = " " .. text
   end
   local pasteQueuedAtMs = nowMs()
@@ -886,10 +883,24 @@ local function pasteTranscript(text)
   end
   hs.pasteboard.setContents(text)
   hs.timer.doAfter(config.pasteDelay, function()
+    local current = hs.application.frontmostApplication()
+    if not target or not current or current:pid() ~= target.pid then
+      lastPasteQueueMs = elapsedMs(pasteQueuedAtMs)
+      lastTotalLatencyMs = elapsedMs(finishAtMs)
+      lastAIReason = lastAIReason or "target_changed_clipboard"
+      log.warn("paste withheld; target application changed", {
+        target = target and target.app or nil,
+        frontmost = current and current:name() or nil,
+        pasteQueueMs = lastPasteQueueMs,
+      })
+      hs.alert.show("Dictation ready—clipboard", 1.2)
+      return
+    end
     hs.eventtap.keyStroke({ "cmd" }, "v", 0)
     local app = hs.application.frontmostApplication()
     lastPasteApp = app and app:name() or nil
     lastPasteQueueMs = elapsedMs(pasteQueuedAtMs)
+    lastTotalLatencyMs = elapsedMs(finishAtMs)
     log.info("paste keystroke sent", {
       app = lastPasteApp,
       pasteQueueMs = lastPasteQueueMs,
@@ -931,6 +942,7 @@ local function handleDictationCommand(text)
   end
   if from and to then
     local ok = appendCorrection(from, to)
+    if ok and task then task:setInput("reload-context\n") end
     log.info("voice correction command", {
       from = from,
       to = to,
@@ -946,11 +958,18 @@ local function handleDictationCommand(text)
   return false
 end
 
-local function shouldPolishTranscript(text)
-  if not config.autoRefine then return false, "disabled" end
-  if #text < (config.autoRefineMinChars or 0) then return false, "short_chars" end
-  if wordCount(text) < (config.autoRefineMinWords or 0) then return false, "short_words" end
-  return true, nil
+local PROFILE_INSTRUCTIONS = {
+  Prompt = "Polish the transcript into paste-ready text. Preserve imperative voice, technical language, names, numerals, and code-like tokens. Remove only clear filler, false starts, and backtracking. Do not answer, expand, summarize, or add facts. Return only the edited transcript.",
+  Message = "Lightly edit the transcript for grammar, punctuation, and paragraphing. Preserve its tone, names, numerals, details, and length. Do not summarize, answer, expand, or add facts. Return only the edited message.",
+}
+
+local function flushPendingDelivery(reason)
+  local pending = pendingDelivery
+  if not pending then return end
+  pendingDelivery = nil
+  pending.valid = false
+  lastAIReason = reason or "superseded"
+  pasteTranscript(pending.localText, pending.target)
 end
 
 -- Deliver a finished transcript: run it through the LLM refiner when
@@ -960,7 +979,13 @@ local function deliverTranscript(text)
   log.info("delivering raw transcript", transcriptLogFields(text))
   if handleDictationCommand(text) then return end
   local rawText = text
-  text = cleanupTranscript(text)
+  local cleanupMeta
+  text, cleanupMeta = core.cleanupTranscript(text, {
+    glossaryPath = config.glossaryPath,
+    correctionsPath = config.correctionMemoryPath,
+    snippetsPath = config.snippetsPath,
+    voiceCommands = config.voiceCommands,
+  })
   if text ~= rawText then
     log.info("local cleanup changed transcript", {
       raw = transcriptLogFields(rawText),
@@ -971,7 +996,11 @@ local function deliverTranscript(text)
   end
   if handleDictationCommand(text) then return end
   local refine = nil
-  local shouldPolish, skipReason = shouldPolishTranscript(text)
+  local shouldPolish, skipReason = core.shouldUseAI(text, activeProfile)
+  if not config.autoRefine then shouldPolish, skipReason = false, "disabled" end
+  if cleanupMeta and cleanupMeta.snippet then
+    shouldPolish, skipReason = false, "snippet"
+  end
   if shouldPolish then
     local ok, mod = pcall(require, "refine")
     if ok and type(mod) == "table" and type(mod.refineText) == "function" then
@@ -985,29 +1014,48 @@ local function deliverTranscript(text)
       autoRefine = config.autoRefine,
       reason = skipReason,
       chars = #text,
-      minChars = config.autoRefineMinChars,
       words = wordCount(text),
-      minWords = config.autoRefineMinWords,
+      profile = activeProfile,
     })
     hidePill()
     play(config.soundStop)
-    pasteTranscript(text)
+    lastAIReason = skipReason
+    pasteTranscript(text, activeTarget)
     return
   end
 
-  hs.pasteboard.setContents(text) -- raw backup while we wait
-  showPill("Polishing...", false)
+  hs.pasteboard.setContents(text) -- local backup while we wait
   local polishStartMs = nowMs()
-  log.info("starting dictation polish", transcriptLogFields(text))
+  takeSequence = takeSequence + 1
+  local pending = {
+    id = takeSequence,
+    localText = text,
+    target = activeTarget,
+    valid = true,
+  }
+  pendingDelivery = pending
+  log.info("starting dictation polish", {
+    takeId = pending.id, profile = activeProfile, chars = #text,
+  })
 
   local done = false
   local timeout = nil
-  local function finishWith(result)
-    if done then return end
+  local polishPill = hs.timer.doAfter(0.35, function()
+    if pendingDelivery == pending and pending.valid then
+      showPill("Polishing...", false)
+    end
+  end)
+  local function finishWith(result, reason, meta)
+    if done or not pending.valid or pendingDelivery ~= pending then return end
     done = true
+    pendingDelivery = nil
     if timeout then timeout:stop() end
+    if polishPill then polishPill:stop() end
     if state == "idle" then hidePill() end -- don't clobber a new take's pill
     play(config.soundStop)
+    lastAILatencyMs = elapsedMs(polishStartMs)
+    lastAIModel = meta and meta.model or lastAIModel
+    lastAIReason = reason or (meta and meta.fallbackReason) or nil
     if result ~= text then
       log.info("dictation polish finished", {
         input = transcriptLogFields(text),
@@ -1019,7 +1067,7 @@ local function deliverTranscript(text)
       fields.polishMs = elapsedMs(polishStartMs)
       log.info("dictation polish returned raw", fields)
     end
-    pasteTranscript(result)
+    pasteTranscript(result, pending.target)
   end
 
   timeout = hs.timer.doAfter(config.autoRefineTimeout, function()
@@ -1027,17 +1075,28 @@ local function deliverTranscript(text)
       timeoutSeconds = config.autoRefineTimeout,
       chars = #text,
     })
-    finishWith(text)
+    finishWith(text, "timeout")
   end)
   refine.refineText(text,
-    function(result) finishWith(result) end,
+    function(result, meta)
+      local accepted, rejectReason = core.validateAIOutput(text, result)
+      if not accepted then
+        log.warn("dictation polish rejected", { reason = rejectReason, takeId = pending.id })
+        finishWith(text, "rejected:" .. rejectReason, meta)
+      else
+        finishWith(result, nil, meta)
+      end
+    end,
     function(msg)
       if not done then
         log.error("dictation polish failed", { message = msg, chars = #text })
         hs.alert.show("Refine failed — pasting raw (" .. msg .. ")", 1.5)
       end
-      finishWith(text)
-    end)
+      finishWith(text, "api_failure:" .. tostring(msg))
+    end, {
+      systemPrompt = PROFILE_INSTRUCTIONS[activeProfile],
+      maxOutputTokens = core.maxOutputTokens(text),
+    })
 end
 
 ----------------------------------------------------------------
@@ -1072,6 +1131,7 @@ end
 
 local function onExit(_, code)
   log.warn("daemon exited", { code = code, state = state, stopReason = stopReason })
+  local exitStopReason = stopReason
   task = nil
   daemonReady = false
   handsFree = false
@@ -1089,7 +1149,7 @@ local function onExit(_, code)
     -- daemon never loses words.
     if lastPartial ~= "" then
       log.warn("salvaging transcript after daemon exit", transcriptLogFields(lastPartial))
-      if wasStopping and stopReason == "finish" then
+      if wasStopping and exitStopReason == "finish" then
         play(config.soundStop)
         pasteTranscript(lastPartial)
       else
@@ -1115,9 +1175,17 @@ spawnDaemon = function()
   daemonReady = false
   stdoutBuf = ""
   local args = { config.locale,
-    "--idle", tostring(config.micIdleSeconds or 180) }
+    "--idle", tostring(config.micIdleSeconds or 180),
+    "--glossary", config.glossaryPath,
+    "--corrections", config.correctionMemoryPath }
   if config.fastResults then table.insert(args, "--fast") end
-  if config.punctuation then table.insert(args, "--punctuation") end
+  if config.punctuation and profileOverride ~= "Literal" then
+    table.insert(args, "--punctuation")
+  end
+  local input = hs.audiodevice.defaultInputDevice()
+  table.insert(args, "--content-hint")
+  table.insert(args, input and input:name() == "Insta360 Link 2C"
+    and "far-field" or "default")
   log.info("spawning daemon", {
     binary = config.binary,
     locale = config.locale,
@@ -1272,7 +1340,8 @@ handleEvent = function(event)
   local e = event.event
 
   if e == "ready" then
-    log.info("daemon ready")
+    contextTermCount = tonumber(event.contextCount) or contextTermCount
+    log.info("daemon ready", { contextTerms = contextTermCount })
     daemonReady = true
     if pendingStart then
       pendingStart = false
@@ -1306,6 +1375,10 @@ handleEvent = function(event)
   elseif e == "level" then
     updatePillLevel(event.value)
 
+  elseif e == "context" then
+    contextTermCount = tonumber(event.count) or contextTermCount
+    log.info("recognition context reloaded", { contextTerms = contextTermCount })
+
   elseif e == "partial" then
     if event.text and event.text ~= "" then
       lastPartial = event.text
@@ -1322,6 +1395,7 @@ handleEvent = function(event)
     disarmWatchdog()
     disarmStartWatchdog()
     state = "idle"
+    stopReason = nil
     handsFree = false
     unbindEsc()
     local text = (event.text or ""):gsub("^%s+", ""):gsub("%s+$", "")
@@ -1343,6 +1417,7 @@ handleEvent = function(event)
     disarmWatchdog()
     disarmStartWatchdog()
     state = "idle"
+    stopReason = nil
     handsFree = false
     hidePill()
     unbindEsc()
@@ -1378,6 +1453,9 @@ end
 -- it to hands-free — see capsReleased).
 function M.begin()
   if state == "recording" or state == "starting" then return end
+  flushPendingDelivery("superseded_by_new_take")
+  activeTarget = captureTarget()
+  activeProfile = core.profileForApp(activeTarget.app, profileOverride)
   beginAtMs = nowMs()
   startedAtMs = nil
   finishAtMs = nil
@@ -1385,7 +1463,10 @@ function M.begin()
   lastTakeMs = nil
   lastPasteQueueMs = nil
   lastErrorMessage = nil
-  log.info("begin requested", { state = state, daemonReady = daemonReady })
+  log.info("begin requested", {
+    state = state, daemonReady = daemonReady, profile = activeProfile,
+    targetApp = activeTarget.app, targetPID = activeTarget.pid,
+  })
   if ensurePreferredInput(true) then
     pendingStart = true
     hs.timer.doAfter(config.startRetryDelay or 0.35, function()
@@ -1434,7 +1515,14 @@ function M.finish()
     hs.pasteboard.setContents(lastPartial)
   end
   armWatchdog()
-  showPill("Finishing...", false)
+  showPill(lastPartial ~= "" and lastPartial or "Listening", false)
+  local thisFinish = finishAtMs
+  hs.timer.doAfter(0.4, function()
+    if state == "stopping" and stopReason == "finish"
+        and finishAtMs == thisFinish then
+      showPill("Finishing...", false)
+    end
+  end)
   send("stop")
 end
 
@@ -1548,6 +1636,32 @@ end
 ----------------------------------------------------------------
 -- start()
 ----------------------------------------------------------------
+function M.setProfile(profile)
+  local allowed = { Auto = true, Prompt = true, Message = true, Literal = true }
+  if not allowed[profile] then return false, "unknown profile" end
+  local punctuationModeChanged = (profileOverride == "Literal") ~= (profile == "Literal")
+  profileOverride = profile
+  hs.settings.set("dictation.profileOverride.v1", profile)
+  activeProfile = core.profileForApp(
+    hs.application.frontmostApplication() and hs.application.frontmostApplication():name(),
+    profileOverride)
+  if punctuationModeChanged then restartDaemonSoon("profile punctuation changed", 0.1) end
+  hs.alert.show("Dictation profile: " .. profile, 1.0)
+  return true
+end
+
+function M.promptCorrection()
+  local button, wrong = hs.dialog.textPrompt(
+    "Learn dictation correction", "Wrong text from the last take:", "", "Next", "Cancel")
+  if button ~= "Next" or trim(wrong) == "" then return false end
+  local button2, right = hs.dialog.textPrompt(
+    "Learn dictation correction", "Replace it with:", "", "Save", "Cancel")
+  if button2 ~= "Save" or not appendCorrection(wrong, right) then return false end
+  send("reload-context")
+  hs.alert.show("Dictation learned correction", 1.0)
+  return true
+end
+
 function M.start()
   startTriggerTap()
   startInputWatcher()
@@ -1606,6 +1720,14 @@ function M.status()
     lastFinalizeMs = lastFinalizeMs,
     lastTakeMs = lastTakeMs,
     lastPasteQueueMs = lastPasteQueueMs,
+    activeProfile = activeProfile,
+    profileOverride = profileOverride,
+    pendingTakeId = pendingDelivery and pendingDelivery.id or nil,
+    contextTermCount = contextTermCount,
+    lastTotalLatencyMs = lastTotalLatencyMs,
+    lastAILatencyMs = lastAILatencyMs,
+    aiModel = lastAIModel or "gpt-5.6-luna",
+    lastAIReason = lastAIReason,
   }
 end
 
