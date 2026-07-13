@@ -12,6 +12,7 @@
 --   security add-generic-password -a "$USER" -s openai-refine -w 'sk-...' -U
 
 local M = {}
+local log = require("logging").new("refine")
 
 ----------------------------------------------------------------
 -- CONFIG — edit values to taste.
@@ -19,18 +20,51 @@ local M = {}
 local config = {
   keychainService = "openai-refine",
 
-  -- This project has access to the GPT-5 family only. gpt-5.4 edits noticeably
-  -- better than -mini (cuts filler, not just grammar) at ~2.4s vs ~1.2s;
-  -- drop to gpt-5.4-mini or -nano if latency matters more than polish.
+  -- This project has access to the GPT-5 family only.
+  --   model           — manual Caps+C / Caps+S. gpt-5.4 edits best (cuts
+  --                     filler, not just grammar) at ~1.4-2.4s.
+  --   autoRefineModel — default dictation cleanup. Keep this on the faster
+  --                     model because it runs on the release-to-paste path.
   model = "gpt-5.4",
+  autoRefineModel = "gpt-5.6-luna",
+  autoRefineFallbackModel = "gpt-5.4-mini",
   reasoningEffort = "none", -- fastest; gpt-5.4 supports none/low/medium/high/xhigh
   temperature = nil, -- GPT-5 models reject non-default temperature; e.g. 0.3 for gpt-4.1-mini
 
-  -- The transformation applied to the text. The output-format sentence keeps
-  -- the model from wrapping results in quotes or "Here's your text:" preambles.
+  -- Words the speech engine tends to mishear — names, brand/product words,
+  -- jargon. The dictation auto-refine is told to fix clear misrecognitions of
+  -- these (e.g. "amplified" → "Amplifyd"). Add your own; the recognizer itself
+  -- can't be biased (SpeechTranscriber exposes no vocabulary API), so this
+  -- LLM-side glossary is how proper nouns get corrected. Empty = no glossary.
+  dictationGlossaryPath = os.getenv("HOME") .. "/dotfiles/hammerspoon/dictation_glossary.txt",
+  vocabulary = {
+    "Amplify", "Amplifyd",
+  },
+
+  -- Generic refine (Caps+C / Caps+S): rewrite for clarity without changing
+  -- meaning. The output-format sentence stops the model wrapping results in
+  -- quotes or "Here's your text:" preambles.
   prompt = "Refine the following text for clarity, conciseness, readability, "
     .. "and understanding without changing its meaning or intent. "
     .. "Return only the refined text — no preamble, no quotes, no commentary.",
+
+  -- Dictation cleanup: Wispr Flow-style paste-ready text. Preserve intent and
+  -- tone, but do not preserve speech artifacts just because they were spoken.
+  dictationPrompt =
+    "You are the cleanup engine for a Wispr Flow-style dictation app. Convert "
+    .. "raw speech-to-text into the text the speaker meant to paste after a "
+    .. "quick edit. Preserve the speaker's meaning, factual details, names, "
+    .. "numbers, urgency, and tone, but do not preserve literal wording when it "
+    .. "is just speech noise. Aggressively remove filler, false starts, meta "
+    .. "narration, duplicated phrases, and self-corrections. Collapse repeated "
+    .. "points into one clear statement. Do not repeat the same criticism or "
+    .. "request twice; keep the strongest single version. Fix speech-recognition "
+    .. "mistakes, capitalization, punctuation, paragraphing, and obvious grammar. "
+    .. "If the raw transcript is a rant, complaint, or instruction, turn it into "
+    .. "a clear direct message with the same force, usually as one concise "
+    .. "paragraph. Keep short fragments short. Do not add new claims, do not "
+    .. "answer the speaker, and do not sanitize profanity or frustration. Return "
+    .. "only the final polished text: no preamble, no quotes, no commentary.",
 
   -- Caps-held bindings (require QuickShots' registerCapsAction).
   capsClipboard = { {}, "c" },
@@ -55,6 +89,7 @@ local config = {
 -- API KEY (Keychain, cached after first read)
 ----------------------------------------------------------------
 local cachedKey = nil
+local dictationFallbackUsed = false
 
 local function apiKey()
   if cachedKey then return cachedKey end
@@ -71,28 +106,56 @@ end
 ----------------------------------------------------------------
 -- OPENAI CALL (async — never blocks the UI)
 ----------------------------------------------------------------
-local function callOpenAI(text, onDone)
+-- opts (optional table):
+--   quiet        suppress alerts (programmatic callers own their own UI)
+--   model        override config.model (e.g. the faster auto-refine model)
+--   systemPrompt override config.prompt (e.g. the dictation cleanup prompt)
+-- onFail(message) is optional; when given, failures are reported through it.
+local function responseText(parsed)
+  if type(parsed) ~= "table" then return nil end
+  if type(parsed.output_text) == "string" then return parsed.output_text end
+  local chunks = {}
+  for _, item in ipairs(parsed.output or {}) do
+    for _, content in ipairs(item.content or {}) do
+      if content.type == "output_text" and type(content.text) == "string" then
+        chunks[#chunks + 1] = content.text
+      end
+    end
+  end
+  return #chunks > 0 and table.concat(chunks, "") or nil
+end
+
+local function callOpenAI(text, onDone, onFail, opts)
+  opts = opts or {}
+  local quiet = opts.quiet
   local key = apiKey()
   if not key then
-    hs.alert.show(
-      "Refine: no API key found in Keychain (service '"
-      .. config.keychainService .. "')", config.alertDuration)
+    local msg = "no API key found in Keychain (service '"
+      .. config.keychainService .. "')"
+    log.error("api key missing", { service = config.keychainService })
+    if onFail then onFail(msg) end
+    if not quiet then
+      hs.alert.show("Refine: " .. msg, config.alertDuration)
+    end
     return
   end
 
+  local model = opts.model or config.model
+  local mode = opts.mode or (quiet and "programmatic" or "manual")
   local body = hs.json.encode({
-    model = config.model,
-    temperature = config.temperature,
-    reasoning_effort = config.reasoningEffort,
-    messages = {
-      { role = "system", content = config.prompt },
-      { role = "user",   content = text },
-    },
+    model = model,
+    instructions = opts.systemPrompt or config.prompt,
+    input = hs.json.encode({ transcript = text }),
+    reasoning = { effort = config.reasoningEffort },
+    text = { verbosity = "low" },
+    max_output_tokens = opts.maxOutputTokens,
+    store = false,
   })
+  log.info("openai request", { mode = mode, model = model, chars = #text })
 
-  hs.alert.show("✍️ Refining…", 1.0)
+  if not quiet then hs.alert.show("✍️ Refining…", 1.0) end
 
-  hs.http.asyncPost("https://api.openai.com/v1/chat/completions", body, {
+  hs.http.asyncPost("https://api.openai.com/v1/responses", body, {
     ["Authorization"] = "Bearer " .. key,
     ["Content-Type"]  = "application/json",
   }, function(status, responseBody)
@@ -103,26 +166,61 @@ local function callOpenAI(text, onDone)
         and parsed.error and parsed.error.message then
         msg = msg .. ": " .. parsed.error.message
       end
-      hs.alert.show("Refine failed — " .. msg, config.alertDuration + 1.5)
+      local modelUnavailable = mode == "dictation"
+        and model == config.autoRefineModel
+        and not dictationFallbackUsed
+        and (status == 400 or status == 404 or msg:lower():find("model", 1, true))
+      if modelUnavailable then
+        dictationFallbackUsed = true
+        log.warn("dictation model unavailable; using session fallback", {
+          model = model, fallback = config.autoRefineFallbackModel, message = msg,
+        })
+        local retry = {}
+        for k, v in pairs(opts) do retry[k] = v end
+        retry.model = config.autoRefineFallbackModel
+        retry.fallbackReason = msg
+        callOpenAI(text, onDone, onFail, retry)
+        return
+      end
+      log.error("openai request failed", {
+        mode = mode,
+        model = model,
+        status = status,
+        message = msg,
+      })
+      if onFail then onFail(msg) end
+      if not quiet then
+        hs.alert.show("Refine failed — " .. msg, config.alertDuration + 1.5)
+      end
       return
     end
 
     local ok, parsed = pcall(hs.json.decode, responseBody)
-    local result = ok and type(parsed) == "table"
-      and parsed.choices and parsed.choices[1]
-      and parsed.choices[1].message and parsed.choices[1].message.content
+    local result = ok and responseText(parsed)
     if type(result) ~= "string" or result:match("^%s*$") then
-      hs.alert.show("Refine failed — empty response", config.alertDuration)
+      log.error("openai empty response", { mode = mode, model = model })
+      if onFail then onFail("empty response") end
+      if not quiet then
+        hs.alert.show("Refine failed — empty response", config.alertDuration)
+      end
       return
     end
 
-    onDone((result:gsub("^%s+", ""):gsub("%s+$", "")))
+    result = result:gsub("^%s+", ""):gsub("%s+$", "")
+    log.info("openai response", {
+      mode = mode,
+      model = model,
+      inputChars = #text,
+      outputChars = #result,
+    })
+    onDone(result, { model = model, fallbackReason = opts.fallbackReason })
   end)
 end
 
 -- Put `result` on the clipboard and paste it. If `restoreTo` is non-nil,
 -- restore it to the clipboard shortly after the paste lands.
 local function pasteResult(result, restoreTo)
+  log.info("pasting result", { chars = #result, restoreClipboard = restoreTo ~= nil })
   hs.pasteboard.setContents(result)
   hs.timer.doAfter(config.pasteDelay, function()
     hs.eventtap.keyStroke({ "cmd" }, "v", 0)
@@ -138,22 +236,87 @@ end
 -- ACTIONS
 ----------------------------------------------------------------
 
+local function trim(s)
+  return (s or ""):gsub("^%s+", ""):gsub("%s+$", "")
+end
+
+local function glossaryTerms()
+  local terms = {}
+  for _, term in ipairs(config.vocabulary or {}) do
+    if trim(term) ~= "" then terms[#terms + 1] = trim(term) end
+  end
+
+  local f = io.open(config.dictationGlossaryPath or "", "r")
+  if f then
+    for line in f:lines() do
+      local cleaned = trim((line:gsub("#.*$", "")))
+      if cleaned ~= "" then
+        local canonical = cleaned:match("^(.-)%s*=")
+          or cleaned:match("^(.-)%s*=>")
+          or cleaned
+        canonical = trim(canonical)
+        if canonical ~= "" then terms[#terms + 1] = canonical end
+      end
+    end
+    f:close()
+  end
+
+  table.sort(terms)
+  local deduped, last = {}, nil
+  for _, term in ipairs(terms) do
+    if term ~= last then
+      deduped[#deduped + 1] = term
+      last = term
+    end
+  end
+  return deduped
+end
+
+-- Build the dictation system prompt, appending the glossary if non-empty.
+local function dictationSystemPrompt()
+  local p = config.dictationPrompt
+  local terms = glossaryTerms()
+  if #terms > 0 then
+    p = p .. " Correct clear misrecognitions of these terms to the exact "
+      .. "spelling shown: " .. table.concat(terms, ", ") .. "."
+  end
+  return p
+end
+
+-- Programmatic API: refine `text` and call onDone(result). No alerts, no
+-- pasting — the caller owns the UI. onFail(message) fires on any failure.
+-- Used by dictation.lua's autoRefine — runs the faster autoRefineModel with
+-- the dictation-cleanup prompt (+ glossary), not the generic Caps+C prompt.
+function M.refineText(text, onDone, onFail, opts)
+  opts = opts or {}
+  callOpenAI(text, onDone, onFail, {
+    quiet = true,
+    model = opts.model or config.autoRefineModel,
+    systemPrompt = opts.systemPrompt or dictationSystemPrompt(),
+    maxOutputTokens = opts.maxOutputTokens,
+    mode = "dictation",
+  })
+end
+
 -- Caps+C: refine whatever is on the clipboard, paste the result.
 function M.refineClipboard()
   local text = hs.pasteboard.getContents()
   if not text or text:match("^%s*$") then
+    log.warn("clipboard refine rejected", { reason = "empty clipboard" })
     hs.alert.show("Refine: clipboard is empty", config.alertDuration)
     return
   end
+  log.info("clipboard refine requested", { chars = #text })
   callOpenAI(text, function(result)
     pasteResult(result, nil)
-  end)
+  end, nil, { mode = "clipboard" })
 end
 
 -- Caps+S: copy the current selection (Cmd+C), refine it, paste over it.
 -- The pasteboard changeCount is polled so we proceed the moment the copy
 -- lands instead of guessing with one fixed delay.
 function M.refineSelection()
+  log.info("selection refine requested")
   local original = hs.pasteboard.getContents()
   local before = hs.pasteboard.changeCount()
   hs.eventtap.keyStroke({ "cmd" }, "c", 0)
@@ -163,18 +326,21 @@ function M.refineSelection()
     if hs.pasteboard.changeCount() ~= before then
       local text = hs.pasteboard.getContents()
       if not text or text:match("^%s*$") then
+        log.warn("selection refine rejected", { reason = "empty selection" })
         hs.alert.show("Refine: no text selected", config.alertDuration)
         return
       end
+      log.info("selection copied", { chars = #text })
       callOpenAI(text, function(result)
         pasteResult(result, config.restoreClipboard and original or nil)
-      end)
+      end, nil, { mode = "selection" })
       return
     end
     attempts = attempts + 1
     if attempts < 12 then
       hs.timer.doAfter(0.05, poll)
     else
+      log.error("selection copy timed out")
       hs.alert.show("Refine: couldn't copy selection", config.alertDuration)
     end
   end
@@ -188,16 +354,19 @@ function M.start()
   local ok, qs = pcall(require, "quickshots")
   if ok and type(qs) == "table" and type(qs.registerCapsAction) == "function" then
     qs.registerCapsAction(config.capsClipboard[1], config.capsClipboard[2],
-      function() M.refineClipboard() end)
+      require("logging").wrap("refine", "refine clipboard", function() M.refineClipboard() end))
     qs.registerCapsAction(config.capsSelection[1], config.capsSelection[2],
-      function() M.refineSelection() end)
+      require("logging").wrap("refine", "refine selection", function() M.refineSelection() end))
+    log.info("caps bindings registered")
   else
     hs.hotkey.bind(config.fallbackClipboard[1], config.fallbackClipboard[2],
-      function() M.refineClipboard() end)
+      require("logging").wrap("refine", "refine clipboard fallback", function() M.refineClipboard() end))
     hs.hotkey.bind(config.fallbackSelection[1], config.fallbackSelection[2],
-      function() M.refineSelection() end)
+      require("logging").wrap("refine", "refine selection fallback", function() M.refineSelection() end))
+    log.warn("caps tap unavailable; fallback bindings registered")
     hs.alert.show("refine: caps tap unavailable — using ⌃⌥⌘R / ⌃⌥⌘S", 3)
   end
+  log.info("started")
 end
 
 -- Exposed so users can read/mutate config from init.lua before/after start().

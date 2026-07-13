@@ -1,0 +1,17 @@
+# Personal dictation glossary.
+# Format:
+#   Canonical Spelling = misheard phrase, alternate phrase
+# Lines without "=" are treated as exact canonical terms.
+
+Wispr Flow = Whisper Flow, Whisperflow, Wisper Flow, Whisper Flo
+Right Command = right command, right cmd, right command button
+Hammerspoon = hammer spoon, Hammer Spoon
+OpenAI = open ai, open A I
+ChatGPT = chat g p t, chat gpt
+Codex = code x
+Claude = clawed
+EquipFlow = equip flow, equipment flow
+Amplifyd = amplified, amplify
+MLX = M L X
+SpeechAnalyzer = speech analyzer
+Apple SpeechAnalyzer = Apple speech analyzer

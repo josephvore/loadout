@@ -14,6 +14,7 @@
 --   pcall(function() require("shortcuts").start() end)           -- last
 
 local M = {}
+local log = require("logging").new("shortcuts")
 
 local HOME = os.getenv("HOME") or ""
 local OVERRIDES_KEY = "shortcuts.overrides.v1"
@@ -38,13 +39,15 @@ local MODULE_FILES = {
   quickshots = "/Volumes/Code/quickshots/quickshots.lua",
   flows      = HOME .. "/dotfiles/hammerspoon/flows.lua",
   refine     = HOME .. "/dotfiles/hammerspoon/refine.lua",
+  dictation  = HOME .. "/dotfiles/hammerspoon/dictation.lua",
   shortcuts  = HOME .. "/dotfiles/hammerspoon/shortcuts.lua",
 }
 
-local MODULE_ORDER = { "quickshots", "refine", "flows", "shortcuts" }
+local MODULE_ORDER = { "quickshots", "dictation", "refine", "flows", "shortcuts" }
 
 local MODULE_TITLES = {
   quickshots = "QuickShots — Screenshots",
+  dictation  = "Dictation — Voice to Text",
   refine     = "Refine — AI Text",
   flows      = "Flows — Quick Launch",
   shortcuts  = "This Menu",
@@ -89,6 +92,28 @@ local REGISTRY = {
     label = "Dev capture → Codex",
     desc  = "Capture shots into a session dir, then open Codex in iTerm with them staged",
     run   = function(m) m.toggleDevCapture() end },
+
+  -- Dictation — on-device push-to-talk (SpeechAnalyzer via ~/bin/hs-dictate).
+  { id = "dictation.talk", module = "dictation", path = { "trigger" }, kind = "hotkey",
+    label = "Dictate (voice to text)",
+    desc  = "Hold Right⌘ while speaking, release to paste — or tap it for hands-free and tap "
+      .. "again to stop. Esc cancels. Rebind only to modifier keys (rightcmd, rightalt, …)",
+    run   = function(m) m.toggle() end },
+  { id = "dictation.profile.auto", module = "dictation", kind = "action",
+    label = "Profile: Auto", desc = "Route messages to Message and everything else to Prompt",
+    run = function(m) m.setProfile("Auto") end },
+  { id = "dictation.profile.prompt", module = "dictation", kind = "action",
+    label = "Profile: Prompt", desc = "Preserve imperative, technical, and code-like dictation",
+    run = function(m) m.setProfile("Prompt") end },
+  { id = "dictation.profile.message", module = "dictation", kind = "action",
+    label = "Profile: Message", desc = "Light grammar and paragraph cleanup for messages",
+    run = function(m) m.setProfile("Message") end },
+  { id = "dictation.profile.literal", module = "dictation", kind = "action",
+    label = "Profile: Literal", desc = "Disable AI and Apple automatic punctuation",
+    run = function(m) m.setProfile("Literal") end },
+  { id = "dictation.learn", module = "dictation", kind = "action",
+    label = "Learn correction", desc = "Save a wrong/right correction and reload recognition context",
+    run = function(m) m.promptCorrection() end },
 
   -- Refine — OpenAI text refinement.
   { id = "refine.clipboard", module = "refine", path = { "capsClipboard" }, kind = "caps",
@@ -167,13 +192,24 @@ end
 
 local MOD_SYMBOLS = { shift = "⇧", ctrl = "⌃", alt = "⌥", cmd = "⌘" }
 
+-- Display names for multi-character key names (incl. bare-modifier keys,
+-- which the caps tap supports as "the modifier IS the key" bindings).
+local KEY_LABELS = {
+  space = "Space", escape = "Esc", ["return"] = "Return", tab = "Tab",
+  delete = "Delete", forwarddelete = "FwdDelete",
+  cmd = "Left⌘", rightcmd = "Right⌘",
+  shift = "Left⇧", rightshift = "Right⇧",
+  alt = "Left⌥", rightalt = "Right⌥",
+  ctrl = "Left⌃", rightctrl = "Right⌃",
+}
+
 local function comboLabel(kind, binding)
   local s = (kind == "caps") and "⇪" or ""
   for _, mod in ipairs(binding[1] or {}) do
     s = s .. (MOD_SYMBOLS[mod] or mod)
   end
   local key = tostring(binding[2] or "?")
-  return s .. (#key == 1 and key:upper() or key)
+  return s .. (KEY_LABELS[key] or (#key == 1 and key:upper() or key))
 end
 
 -- Canonical signature for conflict detection: kind + sorted mods + key.
@@ -206,15 +242,16 @@ function M.buildData()
     local rows = {}
     for _, e in ipairs(REGISTRY) do
       if e.module == mod then
-        local b = currentBinding(e)
+        local b = e.kind == "action" and {} or currentBinding(e)
         if b then
           rows[#rows + 1] = {
             id = e.id,
             kind = e.kind,
-            combo = comboLabel(e.kind, b),
+            combo = e.kind == "action" and "Action" or comboLabel(e.kind, b),
             label = e.label,
             desc = e.desc,
             custom = overrides[e.id] ~= nil,
+            action = e.kind == "action",
           }
         end
       end
@@ -325,14 +362,14 @@ function render() {
     for (const r of s.rows) {
       html += '<div class="row" id="row-' + esc(r.id) + '" data-id="' + esc(r.id) + '"' +
               ' data-search="' + esc((r.label + ' ' + r.desc + ' ' + r.combo).toLowerCase()) + '">';
-      html += '<kbd onclick="startListen(\'' + esc(r.id) + '\')">' + esc(r.combo) + '</kbd>';
+      html += '<kbd' + (r.action ? '' : ' onclick="startListen(\'' + esc(r.id) + '\')"') + '>' + esc(r.combo) + '</kbd>';
       html += '<div class="txt"><div class="l">' + esc(r.label) +
               (r.custom ? '<span class="tag">custom</span>' : '') + '</div>' +
               '<div class="d">' + esc(r.desc) + '</div></div>';
       html += '<div class="btns">';
       html += '<button class="run" onclick="post({action:\'run\', id:\'' + esc(r.id) + '\'})">Run</button>';
-      html += '<button onclick="startListen(\'' + esc(r.id) + '\')">Rebind</button>';
-      if (r.custom) {
+      if (!r.action) html += '<button onclick="startListen(\'' + esc(r.id) + '\')">Rebind</button>';
+      if (r.custom && !r.action) {
         html += '<button class="reset" onclick="post({action:\'reset\', id:\'' + esc(r.id) + '\'})">Reset</button>';
       }
       html += '</div></div>';
@@ -343,6 +380,8 @@ function render() {
 }
 
 function startListen(id) {
+  const selected = rowById(id);
+  if (selected && selected.action) { post({action:'run', id:id}); return; }
   stopListen();
   listening = id;
   const row = document.getElementById('row-' + id);
@@ -440,6 +479,7 @@ local webview = nil
 
 function M.hide()
   if webview then
+    log.info("hide window")
     pcall(function() webview:delete() end)
     webview = nil
   end
@@ -456,21 +496,29 @@ local function handleMessage(msg)
   if type(b) ~= "table" then return end
 
   if b.action == "close" then
+    log.info("message close")
     M.hide()
 
   elseif b.action == "run" then
     local entry = entryById(b.id)
     if not entry then return end
+    log.info("message run", { id = entry.id, module = entry.module })
     M.hide()
     -- Let focus return to the previous app before actions that type/paste.
     hs.timer.doAfter(0.25, function()
       local ok, m = pcall(require, entry.module)
-      if ok then entry.run(m) end
+      if ok then
+        local ran, err = xpcall(function() entry.run(m) end, debug.traceback)
+        if not ran then log.error("run failed", { id = entry.id, error = err }) end
+      else
+        log.error("run module require failed", { id = entry.id, module = entry.module, error = m })
+      end
     end)
 
   elseif b.action == "reset" then
     local entry = entryById(b.id)
     if not entry then return end
+    log.info("message reset", { id = entry.id })
     local o = loadOverrides()
     o[entry.id] = nil
     saveOverrides(o)
@@ -481,17 +529,24 @@ local function handleMessage(msg)
   elseif b.action == "rebind" then
     local entry = entryById(b.id)
     if not entry then return end
+    log.info("message rebind", { id = entry.id, key = b.key })
     local key, mods = b.key, b.mods or {}
     if type(key) ~= "string" or not hs.keycodes.map[key] then
       respondJS({ ok = false, error = "Unrecognized key: " .. tostring(key) })
+      log.warn("rebind rejected", { id = entry.id, reason = "unrecognized key", key = key })
       return
     end
     local newSig = comboSig(entry.kind, mods, key)
     for _, other in ipairs(REGISTRY) do
-      if other.id ~= entry.id then
+      if other.id ~= entry.id and other.kind ~= "action" then
         local bnd = currentBinding(other)
         if bnd and comboSig(other.kind, bnd[1], bnd[2]) == newSig then
           respondJS({ ok = false, error = "That key is already bound to: " .. other.label })
+          log.warn("rebind rejected", {
+            id = entry.id,
+            reason = "conflict",
+            other = other.id,
+          })
           return
         end
       end
@@ -503,11 +558,13 @@ local function handleMessage(msg)
     hs.settings.set(REOPEN_KEY, true)
     hs.alert.show(
       entry.label .. " → " .. comboLabel(entry.kind, { mods, key }) .. " — reloading…", 1.2)
+    log.info("rebind saved", { id = entry.id, combo = comboLabel(entry.kind, { mods, key }) })
     hs.timer.doAfter(0.5, hs.reload)
   end
 end
 
 function M.show()
+  log.info("show window")
   M.hide()
 
   local uc = hs.webview.usercontent.new("shortcuts"):setCallback(handleMessage)
@@ -545,12 +602,18 @@ end
 ----------------------------------------------------------------
 function M.applyOverrides()
   local o = loadOverrides()
+  local count = 0
   for _, e in ipairs(REGISTRY) do
     local ov = o[e.id]
     if type(ov) == "table" and ov.key then
-      setBinding(e, { ov.mods or {}, ov.key })
+      if setBinding(e, { ov.mods or {}, ov.key }) then
+        count = count + 1
+      else
+        log.warn("override skipped", { id = e.id })
+      end
     end
   end
+  log.info("overrides applied", { count = count })
 end
 
 ----------------------------------------------------------------
@@ -559,9 +622,13 @@ end
 function M.start()
   local ok, qs = pcall(require, "quickshots")
   if ok and type(qs) == "table" and type(qs.registerCapsAction) == "function" then
-    qs.registerCapsAction(config.capsMenu[1], config.capsMenu[2], function() M.show() end)
+    qs.registerCapsAction(config.capsMenu[1], config.capsMenu[2],
+      require("logging").wrap("shortcuts", "show caps menu", function() M.show() end))
+    log.info("caps menu bound")
   else
-    hs.hotkey.bind(config.fallbackMenu[1], config.fallbackMenu[2], function() M.show() end)
+    hs.hotkey.bind(config.fallbackMenu[1], config.fallbackMenu[2],
+      require("logging").wrap("shortcuts", "show fallback menu", function() M.show() end))
+    log.warn("caps tap unavailable; fallback bound")
     hs.alert.show("shortcuts: caps tap unavailable — window on ⌃⌥⌘K", 3)
   end
 
@@ -571,6 +638,7 @@ function M.start()
     hs.settings.set(REOPEN_KEY, false)
     hs.timer.doAfter(0.5, function() M.show() end)
   end
+  log.info("started")
 end
 
 -- Exposed so users can read/mutate config from init.lua before/after start().

@@ -29,6 +29,10 @@ link ".zprofile"                         "${HOME}/.zprofile"
 link ".zshenv"                           "${HOME}/.zshenv"
 link "hammerspoon/init.lua"              "${HOME}/.hammerspoon/init.lua"
 link "hammerspoon/flows.lua"             "${HOME}/.hammerspoon/flows.lua"
+link "hammerspoon/refine.lua"            "${HOME}/.hammerspoon/refine.lua"
+link "hammerspoon/shortcuts.lua"         "${HOME}/.hammerspoon/shortcuts.lua"
+link "hammerspoon/dictation.lua"         "${HOME}/.hammerspoon/dictation.lua"
+link "hammerspoon/logging.lua"           "${HOME}/.hammerspoon/logging.lua"
 link "raycast-scripts/kill-dev-servers.sh" "${HOME}/.config/raycast/scripts/kill-dev-servers.sh"
 
 echo
