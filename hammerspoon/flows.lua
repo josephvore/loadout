@@ -7,6 +7,7 @@
 -- because apps essentially never bind them.
 
 local M = {}
+local log = require("logging").new("flows")
 
 ----------------------------------------------------------------
 -- CONFIG — edit hotkeys and paths here.
@@ -69,8 +70,14 @@ end
 -- Returns true on success, or false plus an error message.
 -- `now` is an optional os.date-compatible timestamp (for deterministic tests).
 function M.appendCapture(filePath, text, now)
-  if not filePath or filePath == "" then return false, "no file path" end
-  if not text or text:match("^%s*$") then return false, "empty text" end
+  if not filePath or filePath == "" then
+    log.warn("capture rejected", { reason = "no file path" })
+    return false, "no file path"
+  end
+  if not text or text:match("^%s*$") then
+    log.warn("capture rejected", { reason = "empty text" })
+    return false, "empty text"
+  end
 
   now = now or os.time()
   local today = os.date("%Y-%m-%d", now)
@@ -94,7 +101,10 @@ function M.appendCapture(filePath, text, now)
   end
 
   local f, err = io.open(filePath, "a")
-  if not f then return false, err or "could not open file" end
+  if not f then
+    log.error("capture open failed", { path = filePath, error = err })
+    return false, err or "could not open file"
+  end
 
   if not headingExists then
     f:write("\n" .. heading .. "\n")
@@ -103,6 +113,7 @@ function M.appendCapture(filePath, text, now)
   local oneLine = text:gsub("%s*\n%s*", " "):gsub("%s+$", "")
   f:write(string.format("- [ ] %s %s\n", hhmm, oneLine))
   f:close()
+  log.info("capture appended", { path = filePath, chars = #oneLine })
   return true
 end
 
@@ -122,8 +133,10 @@ function M.obsidianCapture()
   if not text or text:match("^%s*$") then return end
   local ok, err = M.appendCapture(config.quickCaptureFile, text)
   if ok then
+    log.info("obsidian capture saved", { path = config.quickCaptureFile })
     hs.alert.show("Captured to Obsidian", config.alertDuration)
   else
+    log.error("obsidian capture failed", { error = err })
     hs.alert.show("Capture failed: " .. tostring(err), config.alertDuration)
   end
 end
@@ -153,11 +166,13 @@ local function resolveClaudeRepo()
       if out ~= "" then return out end
     end
   end
+  log.info("resolved claude repo", { repo = config.claudeRepoFallback })
   return config.claudeRepoFallback
 end
 
 function M.voiceClaudeCode()
   local repo = resolveClaudeRepo()
+  log.info("launching voice claude code", { repo = repo, command = config.claudeCommand })
   -- Escape double quotes for safe embedding inside the AppleScript string.
   local repoEsc = repo:gsub('"', '\\"')
   local cmdEsc = config.claudeCommand:gsub('"', '\\"')
@@ -172,11 +187,15 @@ function M.voiceClaudeCode()
   ]], repoEsc, cmdEsc)
   local ok, _, raw = hs.osascript.applescript(script)
   if not ok then
+    log.error("iterm launch failed", { error = raw })
     hs.alert.show("iTerm launch failed", config.alertDuration)
+  else
+    log.info("iterm launched", { repo = repo })
   end
 end
 
 function M.claudeChromeDogfood()
+  log.info("starting claude chrome dogfood")
   hs.application.launchOrFocus("Google Chrome")
   -- 1) let Chrome come forward, 2) toggle the Claude side panel (⌘E),
   -- 3) optionally auto-start Wispr so dictation lands in the panel composer.
@@ -189,6 +208,7 @@ function M.claudeChromeDogfood()
 end
 
 function M.chromeSearch()
+  log.info("starting chrome search")
   hs.application.launchOrFocus("Google Chrome")
   hs.timer.doAfter(0.25, function()
     hs.eventtap.keyStroke({ "cmd" }, "t", 0)
@@ -197,8 +217,10 @@ end
 
 function M.startWispr()
   if config.wisprDeeplink and config.wisprDeeplink ~= "" then
+    log.info("starting wispr", { deeplink = config.wisprDeeplink })
     hs.execute(string.format("open %q", config.wisprDeeplink))
   else
+    log.warn("wispr deeplink missing")
     hs.alert.show(
       "Wispr start needs the Wispr Flow Raycast extension.\n" ..
       "Bind config.wisprDeeplink to e.g.\n" ..
@@ -216,10 +238,13 @@ function M.start()
   local function bind(spec, fn, label)
     if not spec then return end
     local ok, err = pcall(function()
-      hs.hotkey.bind(spec[1], spec[2], fn)
+      hs.hotkey.bind(spec[1], spec[2], require("logging").wrap("flows", label, fn))
     end)
     if not ok then
+      log.error("hotkey bind failed", { label = label, error = err })
       hs.alert.show("flows: failed to bind " .. tostring(label) .. ": " .. tostring(err), 3)
+    else
+      log.info("hotkey bound", { label = label, key = spec[2] })
     end
   end
 
@@ -230,6 +255,7 @@ function M.start()
   bind(config.hotkeys.wispr,    function() M.startWispr() end,         "wispr")
 
   hs.alert.show("flows ready", config.alertDuration)
+  log.info("started")
 end
 
 -- Exposed so users can read/mutate config from init.lua before/after start().
