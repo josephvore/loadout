@@ -35,6 +35,7 @@ check(not select(1, core.validateAIOutput(six, string.rep("You are the cleanup e
 check(select(2, core.validateAIOutput("Use 42 items", "Use 43 items")) == "numerals_changed", "number guard")
 check(select(2, core.validateAIOutput("Open the page", "Open https://example.com")) == "url_introduced", "URL guard")
 check(select(2, core.validateAIOutput("hello", "")) == "empty", "empty guard")
+check(select(2, core.validateAIOutput("hello there", '{"transcript":"hello there"}')) == "json_wrapper", "JSON wrapper guard")
 check(select(2, core.validateAIOutput("a reasonably long input", "tiny")) == "length_ratio", "length guard")
 
 local queue = core.newDeliveryQueue()

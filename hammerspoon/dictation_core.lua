@@ -283,6 +283,9 @@ local LEAK_MARKERS = {
 function M.validateAIOutput(input, output)
   input, output = trim(input), trim(output)
   if output == "" then return false, "empty" end
+  if output:match('^%s*{%s*["\']transcript["\']%s*:') then
+    return false, "json_wrapper"
+  end
   if numeralSet(input) ~= numeralSet(output) then return false, "numerals_changed" end
   if not containsURL(input) and containsURL(output) then return false, "url_introduced" end
   local inLower, outLower = input:lower(), output:lower()
