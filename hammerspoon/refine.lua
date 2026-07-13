@@ -89,7 +89,7 @@ local config = {
 -- API KEY (Keychain, cached after first read)
 ----------------------------------------------------------------
 local cachedKey = nil
-local dictationFallbackUsed = false
+local dictationUseFallback = false
 
 local function apiKey()
   if cachedKey then return cachedKey end
@@ -168,10 +168,10 @@ local function callOpenAI(text, onDone, onFail, opts)
       end
       local modelUnavailable = mode == "dictation"
         and model == config.autoRefineModel
-        and not dictationFallbackUsed
+        and not dictationUseFallback
         and (status == 400 or status == 404 or msg:lower():find("model", 1, true))
       if modelUnavailable then
-        dictationFallbackUsed = true
+        dictationUseFallback = true
         log.warn("dictation model unavailable; using session fallback", {
           model = model, fallback = config.autoRefineFallbackModel, message = msg,
         })
@@ -291,7 +291,8 @@ function M.refineText(text, onDone, onFail, opts)
   opts = opts or {}
   callOpenAI(text, onDone, onFail, {
     quiet = true,
-    model = opts.model or config.autoRefineModel,
+    model = opts.model or (dictationUseFallback
+      and config.autoRefineFallbackModel or config.autoRefineModel),
     systemPrompt = opts.systemPrompt or dictationSystemPrompt(),
     maxOutputTokens = opts.maxOutputTokens,
     mode = "dictation",
