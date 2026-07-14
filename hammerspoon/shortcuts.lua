@@ -109,7 +109,7 @@ local REGISTRY = {
     label = "Profile: Message", desc = "Light grammar and paragraph cleanup for messages",
     run = function(m) m.setProfile("Message") end },
   { id = "dictation.profile.literal", module = "dictation", kind = "action",
-    label = "Profile: Literal", desc = "Disable AI and Apple automatic punctuation",
+    label = "Profile: Literal", desc = "Disable AI cleanup while keeping native punctuation",
     run = function(m) m.setProfile("Literal") end },
   { id = "dictation.learn", module = "dictation", kind = "action",
     label = "Learn correction", desc = "Save a wrong/right correction and reload recognition context",
