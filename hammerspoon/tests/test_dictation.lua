@@ -101,6 +101,19 @@ local planPhrase = core.cleanupTranscript(
 check(planPhrase == "OK create a comprehensive plan to fix",
   "comprehensive plan correction")
 
+local remainingBaseline = core.cleanupTranscript(
+  "without adding a necessary punctuation. Terms like GPD 5.4 mini, "
+    .. "Insta 360 link to C, and CoreAudio",
+  {
+    glossaryPath = root .. "/dictation_glossary.txt",
+    correctionsPath = root .. "/dictation_corrections.tsv",
+    lightCleanup = true,
+  })
+check(remainingBaseline ==
+  "without adding unnecessary punctuation. Terms like GPT-5.4-mini, "
+    .. "Insta360 Link 2C, and CoreAudio",
+  "remaining recorded variants: " .. remainingBaseline)
+
 local filler = core.cleanupTranscript("Um keep this uh exact", {
   voiceCommands = true, lightCleanup = true,
 })
