@@ -26,8 +26,7 @@ local config = {
   --   autoRefineModel — default dictation cleanup. Keep this on the faster
   --                     model because it runs on the release-to-paste path.
   model = "gpt-5.4",
-  autoRefineModel = "gpt-5.6-luna",
-  autoRefineFallbackModel = "gpt-5.4-mini",
+  autoRefineModel = "gpt-5.4-mini",
   reasoningEffort = "none", -- fastest; gpt-5.4 supports none/low/medium/high/xhigh
   temperature = nil, -- GPT-5 models reject non-default temperature; e.g. 0.3 for gpt-4.1-mini
 
@@ -89,7 +88,6 @@ local config = {
 -- API KEY (Keychain, cached after first read)
 ----------------------------------------------------------------
 local cachedKey = nil
-local dictationUseFallback = false
 
 local function apiKey()
   if cachedKey then return cachedKey end
@@ -168,22 +166,6 @@ local function callOpenAI(text, onDone, onFail, opts)
       if ok and type(parsed) == "table"
         and parsed.error and parsed.error.message then
         msg = msg .. ": " .. parsed.error.message
-      end
-      local modelUnavailable = mode == "dictation"
-        and model == config.autoRefineModel
-        and not dictationUseFallback
-        and (status == 400 or status == 404 or msg:lower():find("model", 1, true))
-      if modelUnavailable then
-        dictationUseFallback = true
-        log.warn("dictation model unavailable; using session fallback", {
-          model = model, fallback = config.autoRefineFallbackModel, message = msg,
-        })
-        local retry = {}
-        for k, v in pairs(opts) do retry[k] = v end
-        retry.model = config.autoRefineFallbackModel
-        retry.fallbackReason = msg
-        callOpenAI(text, onDone, onFail, retry)
-        return
       end
       log.error("openai request failed", {
         mode = mode,
@@ -294,8 +276,7 @@ function M.refineText(text, onDone, onFail, opts)
   opts = opts or {}
   callOpenAI(text, onDone, onFail, {
     quiet = true,
-    model = opts.model or (dictationUseFallback
-      and config.autoRefineFallbackModel or config.autoRefineModel),
+    model = opts.model or config.autoRefineModel,
     systemPrompt = opts.systemPrompt or dictationSystemPrompt(),
     maxOutputTokens = opts.maxOutputTokens,
     mode = "dictation",

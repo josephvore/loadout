@@ -25,9 +25,10 @@ check(core.profileForApp("Messages", "Auto") == "Message", "Messages profile")
 check(core.profileForApp("iTerm2", "Auto") == "Prompt", "iTerm profile")
 check(core.profileForApp("Slack", "Literal") == "Literal", "override profile")
 check(select(1, core.shouldUseAI("one two three", "Literal")) == false, "literal AI bypass")
-check(select(1, core.shouldUseAI("one two three four five six seven eight nine ten eleven twelve", "Message")), "message threshold")
-check(not select(1, core.shouldUseAI("one two three", "Prompt")), "prompt short bypass")
-check(select(1, core.shouldUseAI("Um actually no use the second option", "Prompt")), "prompt backtracking trigger")
+check(not select(1, core.shouldUseAI("one two three four five six seven eight nine ten eleven twelve", "Message")), "message length bypass")
+check(not select(1, core.shouldUseAI("one two three", "Prompt")), "prompt bypass")
+check(select(1, core.shouldUseAI("Use the first option actually no use the second option", "Prompt")), "prompt backtracking trigger")
+check(select(1, core.shouldUseAI("Draft one let me rephrase draft two", "Message")), "message backtracking trigger")
 check(core.maxOutputTokens("one two") == 32, "token minimum")
 
 local six = "Refine the prompt based on that."
@@ -37,6 +38,18 @@ check(select(2, core.validateAIOutput("Open the page", "Open https://example.com
 check(select(2, core.validateAIOutput("hello", "")) == "empty", "empty guard")
 check(select(2, core.validateAIOutput("hello there", '{"transcript":"hello there"}')) == "json_wrapper", "JSON wrapper guard")
 check(select(2, core.validateAIOutput("a reasonably long input", "tiny")) == "length_ratio", "length guard")
+check(select(1, core.validateAIOutput("hello there", "Hello, there.")), "punctuation-only polish")
+check(select(2, core.validateAIOutput("we'll need to move", "we need to move")) == "words_changed", "modal fidelity guard")
+check(select(2, core.validateAIOutput("do not invent a URL", "do not prevent a URL")) == "words_changed", "semantic substitution guard")
+check(select(1, core.validateAIOutput(
+  "Use red actually no let me change that use blue",
+  "Use blue.")), "explicit correction deletion")
+check(select(2, core.validateAIOutput(
+  "Use red actually no let me change that use blue",
+  "Use green.")) == "words_introduced", "explicit correction invention guard")
+check(select(2, core.validateAIOutput(
+  "Use red actually no let me change that use blue",
+  "Blue.")) == "correction_tail_changed", "explicit correction tail guard")
 
 local queue = core.newDeliveryQueue()
 local first = queue:start("first", {pid=1})
@@ -59,6 +72,52 @@ local cf = assert(io.open(corrections, "w")); cf:write("old\tOlder\nnew\tNewest\
 local terms = core.contextTerms(glossary, corrections, 100)
 check(table.concat(terms, "|") == "Wispr Flow|GPT-5.6|Newest|Older", "context priority")
 os.remove(glossary); os.remove(corrections)
+
+local baseline = core.cleanupTranscript(
+  "I was testing Hammerspoon Codex get have the OpenAI responses API. "
+    .. "Turns like EquipFlow GPT 5.4 mini instant 360 link to C and court audio "
+    .. "should remain spoken. Do not change a model lumber or substitute it.",
+  {
+    glossaryPath = root .. "/dictation_glossary.txt",
+    correctionsPath = root .. "/dictation_corrections.tsv",
+    voiceCommands = true,
+    lightCleanup = true,
+  })
+for _, required in ipairs({
+  "GitHub and the OpenAI", "Terms like EquipFlow", "GPT-5.4-mini",
+  "Insta360 Link 2C", "CoreAudio", "model number or substitute",
+}) do
+  check(baseline:find(required, 1, true) ~= nil,
+    "baseline correction missing " .. required .. ": " .. baseline)
+end
+
+local planPhrase = core.cleanupTranscript(
+  "OK create a conference of plan to fix",
+  {
+    glossaryPath = root .. "/dictation_glossary.txt",
+    correctionsPath = root .. "/dictation_corrections.tsv",
+    lightCleanup = true,
+  })
+check(planPhrase == "OK create a comprehensive plan to fix",
+  "comprehensive plan correction")
+
+local remainingBaseline = core.cleanupTranscript(
+  "without adding a necessary punctuation. Terms like GPD 5.4 mini, "
+    .. "Insta 360 link to C, and CoreAudio",
+  {
+    glossaryPath = root .. "/dictation_glossary.txt",
+    correctionsPath = root .. "/dictation_corrections.tsv",
+    lightCleanup = true,
+  })
+check(remainingBaseline ==
+  "without adding unnecessary punctuation. Terms like GPT-5.4-mini, "
+    .. "Insta360 Link 2C, and CoreAudio",
+  "remaining recorded variants: " .. remainingBaseline)
+
+local filler = core.cleanupTranscript("Um keep this uh exact", {
+  voiceCommands = true, lightCleanup = true,
+})
+check(filler == "keep this exact", "light filler cleanup: " .. filler)
 
 if #failures > 0 then
   io.stderr:write(table.concat(failures, "\n") .. "\n")
