@@ -34,8 +34,8 @@ local config = {
   -- this off by default: stable final text matters more than partial churn.
   fastResults = false,
 
-  -- Let Apple supply a rough punctuation pass; the Flow-style cleanup below
-  -- gets the final say on punctuation, paragraphing, and filler removal.
+  -- Keep native punctuation on in every profile. Literal disables AI cleanup,
+  -- not punctuation, so it remains readable without rewriting the speaker.
   punctuation = true,
 
   -- The daemon keeps the mic engine HOT between takes (starting it fresh
@@ -76,11 +76,11 @@ local config = {
   -- downstream hangs or crashes, Cmd+V has your words.
   clipboardBackup = true,
 
-  -- Flow-style default: capture locally, then polish with OpenAI before paste.
-  -- The cleaned transcript is copied to the clipboard immediately as backup;
-  -- if polish fails or runs too long, raw text still pastes.
+  -- Light cleanup sends text to OpenAI only for explicit backtracking cues.
+  -- Ordinary takes stay local and paste immediately after deterministic
+  -- glossary/filler cleanup.
   autoRefine = true,
-  autoRefineTimeout = 2.0,
+  autoRefineTimeout = 2.25,
   autoRefineMinChars = 12,   -- skip only tiny acknowledgements
   autoRefineMinWords = 4,
 
@@ -188,6 +188,7 @@ local lastTotalLatencyMs = nil
 local lastAILatencyMs = nil
 local lastAIModel = nil
 local lastAIReason = nil
+local recognizerEngine = nil
 
 local function transcriptSample(text)
   if not config.logTranscriptSamples then return nil end
@@ -958,10 +959,19 @@ local function handleDictationCommand(text)
   return false
 end
 
-local PROFILE_INSTRUCTIONS = {
-  Prompt = "Polish the transcript into paste-ready text. Preserve imperative voice, technical language, names, numerals, and code-like tokens. Remove only clear filler, false starts, and backtracking. Do not answer, expand, summarize, or add facts. Return only the edited transcript.",
-  Message = "Lightly edit the transcript for grammar, punctuation, and paragraphing. Preserve its tone, names, numerals, details, and length. Do not summarize, answer, expand, or add facts. Return only the edited message.",
-}
+local LIGHT_CLEANUP_INSTRUCTIONS =
+  "You are a conservative speech-to-text cleanup pass. Return only the "
+  .. "corrected transcript. Add natural punctuation and capitalization. "
+  .. "Correct an obvious speech-recognition error only when the surrounding "
+  .. "sentence makes the intended wording highly likely. Resolve explicit "
+  .. "backtracking: when the speaker says actually no, let me change that, "
+  .. "scratch that, never mind, what I mean is, or let me rephrase, delete "
+  .. "the abandoned wording and correction cue while keeping only the "
+  .. "replacement wording. Example: Input: Let us meet at five actually no "
+  .. "let me change that six. Output: Let us meet at six. Otherwise preserve "
+  .. "every claim, name, number, negation, modal verb, and content word. Do "
+  .. "not paraphrase, summarize, reorganize, or make the writing more concise. "
+  .. "If uncertain, leave the wording unchanged."
 
 local function flushPendingDelivery(reason)
   local pending = pendingDelivery
@@ -985,6 +995,7 @@ local function deliverTranscript(text)
     correctionsPath = config.correctionMemoryPath,
     snippetsPath = config.snippetsPath,
     voiceCommands = config.voiceCommands,
+    lightCleanup = activeProfile ~= "Literal",
   })
   if text ~= rawText then
     log.info("local cleanup changed transcript", {
@@ -1094,7 +1105,7 @@ local function deliverTranscript(text)
       end
       finishWith(text, "api_failure:" .. tostring(msg))
     end, {
-      systemPrompt = PROFILE_INSTRUCTIONS[activeProfile],
+      systemPrompt = LIGHT_CLEANUP_INSTRUCTIONS,
       maxOutputTokens = core.maxOutputTokens(text),
     })
 end
@@ -1179,7 +1190,7 @@ spawnDaemon = function()
     "--glossary", config.glossaryPath,
     "--corrections", config.correctionMemoryPath }
   if config.fastResults then table.insert(args, "--fast") end
-  if config.punctuation and profileOverride ~= "Literal" then
+  if config.punctuation then
     table.insert(args, "--punctuation")
   end
   local input = hs.audiodevice.defaultInputDevice()
@@ -1341,7 +1352,10 @@ handleEvent = function(event)
 
   if e == "ready" then
     contextTermCount = tonumber(event.contextCount) or contextTermCount
-    log.info("daemon ready", { contextTerms = contextTermCount })
+    recognizerEngine = event.engine or recognizerEngine
+    log.info("daemon ready", {
+      contextTerms = contextTermCount, engine = recognizerEngine,
+    })
     daemonReady = true
     if pendingStart then
       pendingStart = false
@@ -1378,6 +1392,9 @@ handleEvent = function(event)
   elseif e == "context" then
     contextTermCount = tonumber(event.count) or contextTermCount
     log.info("recognition context reloaded", { contextTerms = contextTermCount })
+
+  elseif e == "diagnostic" then
+    log.warn("daemon diagnostic", { message = event.message })
 
   elseif e == "partial" then
     if event.text and event.text ~= "" then
@@ -1639,13 +1656,11 @@ end
 function M.setProfile(profile)
   local allowed = { Auto = true, Prompt = true, Message = true, Literal = true }
   if not allowed[profile] then return false, "unknown profile" end
-  local punctuationModeChanged = (profileOverride == "Literal") ~= (profile == "Literal")
   profileOverride = profile
   hs.settings.set("dictation.profileOverride.v1", profile)
   activeProfile = core.profileForApp(
     hs.application.frontmostApplication() and hs.application.frontmostApplication():name(),
     profileOverride)
-  if punctuationModeChanged then restartDaemonSoon("profile punctuation changed", 0.1) end
   hs.alert.show("Dictation profile: " .. profile, 1.0)
   return true
 end
@@ -1724,9 +1739,10 @@ function M.status()
     profileOverride = profileOverride,
     pendingTakeId = pendingDelivery and pendingDelivery.id or nil,
     contextTermCount = contextTermCount,
+    recognizerEngine = recognizerEngine,
     lastTotalLatencyMs = lastTotalLatencyMs,
     lastAILatencyMs = lastAILatencyMs,
-    aiModel = lastAIModel or "gpt-5.6-luna",
+    aiModel = lastAIModel or "gpt-5.4-mini",
     lastAIReason = lastAIReason,
   }
 end

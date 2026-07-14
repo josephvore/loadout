@@ -124,6 +124,29 @@ local function applyReplacements(text, opts)
   return text
 end
 
+local EXPLICIT_CORRECTION_CUES = {
+  "actually no", "let me change that", "scratch that", "never mind",
+  "what I mean is", "let me rephrase",
+}
+
+function M.hasExplicitCorrection(text)
+  local lower = tostring(text or ""):lower()
+  for _, cue in ipairs(EXPLICIT_CORRECTION_CUES) do
+    if lower:find(cue, 1, true) then return true, cue end
+  end
+  return false
+end
+
+local function removeStandaloneFillers(text)
+  for _, filler in ipairs({ "uh", "um", "er" }) do
+    local pattern = "%f[%a][" .. filler:sub(1, 1):lower()
+      .. filler:sub(1, 1):upper() .. "]" .. filler:sub(2)
+      .. "%f[%A][,]*"
+    text = text:gsub(pattern, "")
+  end
+  return text:gsub("[ ]+", " ")
+end
+
 local function applyScratchThat(text)
   text = text:gsub("^.*%f[%a][Ss]cratch all that%f[%A][,%.%!%?%s]*", "")
   text = text:gsub("^.*%f[%a][Nn]ever mind%f[%A][,%.%!%?%s]*", "")
@@ -208,6 +231,7 @@ function M.cleanupTranscript(text, opts)
   text = text:gsub("[ ]+", " ")
   if opts.voiceCommands ~= false then text = applyCommands(text) end
   text = applyReplacements(text, opts)
+  if opts.lightCleanup then text = removeStandaloneFillers(text) end
   local snippet
   text, snippet = expandSnippet(text, opts.snippetsPath)
   text = text
@@ -237,25 +261,10 @@ function M.profileForApp(appName, override)
   return MESSAGE_APPS[name] and "Message" or "Prompt"
 end
 
-local FILLER_PATTERNS = {
-  "%f[%a]uh+%f[%A]", "%f[%a]um+%f[%A]", "%f[%a]you know%f[%A]",
-  "%f[%a]I mean%f[%A]", "%f[%a]actually no%f[%A]",
-  "%f[%a]scratch that%f[%A]", "%f[%a]what I mean is%f[%A]",
-  "%f[%a]let me rephrase%f[%A]", "%f[%a]rather%f[%A]",
-}
-
 function M.shouldUseAI(text, profile)
   if profile == "Literal" then return false, "literal" end
-  local words = wordCount(text)
-  if profile == "Message" then
-    return words >= 12, words >= 12 and nil or "short_message"
-  end
-  if words >= 20 then return true end
-  local lower = tostring(text):lower()
-  for _, pattern in ipairs(FILLER_PATTERNS) do
-    if lower:find(pattern) then return true end
-  end
-  return false, "short_prompt"
+  if M.hasExplicitCorrection(text) then return true end
+  return false, "no_explicit_correction"
 end
 
 function M.maxOutputTokens(text)
@@ -272,6 +281,63 @@ end
 
 local function containsURL(text)
   return text:match("https?://[%w]") or text:match("www%.[%w]")
+end
+
+local function normalizedTokens(text)
+  text = tostring(text or ""):lower()
+    :gsub("\226\128\153", "'")
+    :gsub("\226\128\147", "-")
+    :gsub("\226\128\148", "-")
+  local tokens = {}
+  for token in text:gmatch("[%w']+") do tokens[#tokens + 1] = token end
+  return tokens
+end
+
+local function tokensEqual(a, b)
+  if #a ~= #b then return false end
+  for i = 1, #a do if a[i] ~= b[i] then return false end end
+  return true
+end
+
+local function orderedSubsequence(needle, haystack)
+  local pos = 1
+  for _, token in ipairs(needle) do
+    while pos <= #haystack and haystack[pos] ~= token do pos = pos + 1 end
+    if pos > #haystack then return false end
+    pos = pos + 1
+  end
+  return true
+end
+
+local function correctionTail(tokens)
+  local cues = {
+    { "actually", "no" }, { "let", "me", "change", "that" },
+    { "scratch", "that" }, { "never", "mind" },
+    { "what", "i", "mean", "is" }, { "let", "me", "rephrase" },
+  }
+  local tailStart = nil
+  for i = 1, #tokens do
+    for _, cue in ipairs(cues) do
+      local matches = true
+      for j = 1, #cue do
+        if tokens[i + j - 1] ~= cue[j] then matches = false; break end
+      end
+      if matches then tailStart = i + #cue end
+    end
+  end
+  if not tailStart or tailStart > #tokens then return nil end
+  local tail = {}
+  for i = tailStart, #tokens do tail[#tail + 1] = tokens[i] end
+  return tail
+end
+
+local function endsWithTokens(tokens, suffix)
+  if not suffix or #suffix > #tokens then return false end
+  local offset = #tokens - #suffix
+  for i = 1, #suffix do
+    if tokens[offset + i] ~= suffix[i] then return false end
+  end
+  return true
 end
 
 local LEAK_MARKERS = {
@@ -294,8 +360,25 @@ function M.validateAIOutput(input, output)
       return false, "prompt_leak"
     end
   end
+  local inputTokens, outputTokens = normalizedTokens(input), normalizedTokens(output)
+  local hasCorrection = M.hasExplicitCorrection(input)
   local ratio = #output / math.max(1, #input)
-  if ratio < 0.45 or ratio > 1.45 then return false, "length_ratio" end
+  if ratio > 1.45 or (not hasCorrection and ratio < 0.45) then
+    return false, "length_ratio"
+  end
+  if not hasCorrection then
+    if not tokensEqual(inputTokens, outputTokens) then
+      return false, "words_changed"
+    end
+  else
+    local tail = correctionTail(inputTokens)
+    if not orderedSubsequence(outputTokens, inputTokens) then
+      return false, "words_introduced"
+    end
+    if not endsWithTokens(outputTokens, tail) then
+      return false, "correction_tail_changed"
+    end
+  end
   return true
 end
 

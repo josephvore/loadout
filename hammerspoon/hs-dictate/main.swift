@@ -1,7 +1,8 @@
 // hs-dictate — on-device streaming dictation daemon for Hammerspoon.
 //
-// Uses the macOS 26 SpeechAnalyzer / DictationTranscriber API (Apple's new
-// on-device speech engine) with an AVAudioEngine microphone tap. Audio is
+// Uses the macOS 26 SpeechAnalyzer / SpeechTranscriber API (with
+// DictationTranscriber as a compatibility fallback) and an AVAudioEngine
+// microphone tap. Audio is
 // transcribed WHILE you speak, so the final transcript is available almost
 // instantly when recording stops.
 //
@@ -86,7 +87,9 @@ actor Dictator {
     private var contextTerms: [String] = []
 
     private var analyzer: SpeechAnalyzer?
-    private var transcriber: DictationTranscriber?
+    private var speechTranscriber: SpeechTranscriber?
+    private var dictationTranscriber: DictationTranscriber?
+    private var recognizerEngine = "speech"
     private var analyzerFormat: AVAudioFormat?
     private var inputContinuation: AsyncStream<AnalyzerInput>.Continuation?
     private var resultsTask: Task<Void, Never>?
@@ -106,7 +109,7 @@ actor Dictator {
     // seen to hang; never make the user wait longer than this — the
     // streamed text is already in hand.
     private let finalizeTimeout = 1.0
-    private let stopTailGraceMs: UInt64 = 140
+    private let stopTailGraceMs: UInt64 = 300
 
     // Shared with the (nonisolated) tap callback. converter/format are only
     // mutated while the engine is stopped; continuation flips at take
@@ -128,7 +131,19 @@ actor Dictator {
         self.farField = farField
     }
 
-    private func makeTranscriber() -> DictationTranscriber {
+    private func makeSpeechTranscriber() -> SpeechTranscriber {
+        // Volatile results keep the live overlay responsive. Deliberately do
+        // not enable fastResults: Apple documents that speed bias as less
+        // accurate, and the daemon already keeps the model and mic warm.
+        SpeechTranscriber(
+            locale: locale,
+            transcriptionOptions: [],
+            reportingOptions: [.volatileResults],
+            attributeOptions: []
+        )
+    }
+
+    private func makeDictationTranscriber() -> DictationTranscriber {
         var preset = DictationTranscriber.Preset.progressiveLongDictation
         if farField { preset.contentHints.insert(.farField) }
         preset.transcriptionOptions.remove(.punctuation)
@@ -150,31 +165,60 @@ actor Dictator {
                 userInfo: [NSLocalizedDescriptionKey: msg])
     }
 
-    // Ensure the on-device model for `locale` is installed, build the
-    // analyzer, preheat it, and bring the mic up hot.
-    func prepare() async throws {
+    private func installAssets(supporting module: any SpeechModule) async throws {
+        if let request = try await AssetInventory.assetInstallationRequest(
+            supporting: [module]) {
+            emit(["event": "downloading", "message": "downloading speech model…"])
+            try await request.downloadAndInstall()
+        }
+    }
+
+    private func containsLocale(_ locales: [Locale]) -> Bool {
+        locales.contains {
+            $0.identifier(.bcp47) == locale.identifier(.bcp47)
+        }
+    }
+
+    private func prepareRecognizer() async throws {
+        let speechLocale = await SpeechTranscriber.supportedLocale(
+            equivalentTo: locale)
+        if SpeechTranscriber.isAvailable, speechLocale != nil {
+            do {
+                recognizerEngine = "speech"
+                let candidate = makeSpeechTranscriber()
+                if !containsLocale(await SpeechTranscriber.installedLocales) {
+                    try await installAssets(supporting: candidate)
+                }
+                try await rebuild()
+                return
+            } catch {
+                emit(["event": "diagnostic", "message":
+                    "SpeechTranscriber unavailable; using compatibility fallback: "
+                    + error.localizedDescription])
+            }
+        }
+
         let supported = await DictationTranscriber.supportedLocales
         guard supported.contains(where: {
             $0.identifier(.bcp47) == locale.identifier(.bcp47)
         }) else {
             throw NSError(domain: "hs-dictate", code: 1, userInfo: [
                 NSLocalizedDescriptionKey:
-                    "locale \(locale.identifier) not supported by DictationTranscriber"
+                    "locale \(locale.identifier) is unsupported by both transcribers"
             ])
         }
-
-        let installed = await DictationTranscriber.installedLocales
-        if !installed.contains(where: {
-            $0.identifier(.bcp47) == locale.identifier(.bcp47)
-        }) {
-            emit(["event": "downloading", "message": "downloading speech model…"])
-            if let request = try await AssetInventory.assetInstallationRequest(
-                supporting: [makeTranscriber()]) {
-                try await request.downloadAndInstall()
-            }
+        recognizerEngine = "dictation"
+        let candidate = makeDictationTranscriber()
+        if !containsLocale(await DictationTranscriber.installedLocales) {
+            try await installAssets(supporting: candidate)
         }
-
         try await rebuild()
+    }
+
+    // Ensure the best on-device model for `locale` is installed, build the
+    // analyzer, preheat it, and bring the mic up hot.
+    func prepare() async throws {
+        try await prepareRecognizer()
         // Make "ready" mean the audio path is already open. Otherwise the
         // first real take pays the AVAudioEngine/tap startup cost.
         try await startAudioRecovering()
@@ -337,7 +381,8 @@ actor Dictator {
 
     func start() async {
         guard !recording else { return }
-        guard let analyzer, let transcriber, analyzerFormat != nil else {
+        guard let analyzer, analyzerFormat != nil,
+              speechTranscriber != nil || dictationTranscriber != nil else {
             emitError("engine not prepared")
             return
         }
@@ -366,20 +411,39 @@ actor Dictator {
 
         // Consume results for this take. Volatile results give the live
         // partial transcript; finalized results accumulate into the answer.
-        resultsTask = Task { [weak self] in
-            do {
-                for try await result in transcriber.results {
-                    let text = String(result.text.characters)
-                    if result.isFinal {
-                        await self?.appendFinal(text, gen: gen)
-                    } else {
-                        await self?.noteVolatile(text, gen: gen)
+        if let transcriber = speechTranscriber {
+            resultsTask = Task { [weak self] in
+                do {
+                    for try await result in transcriber.results {
+                        let text = String(result.text.characters)
+                        if result.isFinal {
+                            await self?.appendFinal(text, gen: gen)
+                        } else {
+                            await self?.noteVolatile(text, gen: gen)
+                        }
                     }
+                } catch is CancellationError {
+                    // expected: abandoned takes are cancelled during teardown
+                } catch {
+                    emitError("results: \(error.localizedDescription)")
                 }
-            } catch is CancellationError {
-                // expected: abandoned takes are cancelled during teardown
-            } catch {
-                emitError("results: \(error.localizedDescription)")
+            }
+        } else if let transcriber = dictationTranscriber {
+            resultsTask = Task { [weak self] in
+                do {
+                    for try await result in transcriber.results {
+                        let text = String(result.text.characters)
+                        if result.isFinal {
+                            await self?.appendFinal(text, gen: gen)
+                        } else {
+                            await self?.noteVolatile(text, gen: gen)
+                        }
+                    }
+                } catch is CancellationError {
+                    // expected: abandoned takes are cancelled during teardown
+                } catch {
+                    emitError("results: \(error.localizedDescription)")
+                }
             }
         }
 
@@ -545,7 +609,8 @@ actor Dictator {
     }
 
     func readyFields() -> [String: Any] {
-        ["event": "ready", "contextCount": contextTerms.count]
+        ["event": "ready", "contextCount": contextTerms.count,
+         "engine": recognizerEngine]
     }
 
     private func canonicalTerm(_ line: String) -> String? {
@@ -607,13 +672,23 @@ actor Dictator {
     }
 
     private func rebuild() async throws {
-        let transcriber = makeTranscriber()
-        self.transcriber = transcriber
-        let analyzer = SpeechAnalyzer(modules: [transcriber])
+        let module: any SpeechModule
+        if recognizerEngine == "speech" {
+            let transcriber = makeSpeechTranscriber()
+            speechTranscriber = transcriber
+            dictationTranscriber = nil
+            module = transcriber
+        } else {
+            let transcriber = makeDictationTranscriber()
+            dictationTranscriber = transcriber
+            speechTranscriber = nil
+            module = transcriber
+        }
+        let analyzer = SpeechAnalyzer(modules: [module])
         self.analyzer = analyzer
         try await installContext(on: analyzer)
         self.analyzerFormat = await SpeechAnalyzer.bestAvailableAudioFormat(
-            compatibleWith: [transcriber])
+            compatibleWith: [module])
         if tapInstalled,
            let analyzerFormat,
            let converter = AVAudioConverter(from: engine.inputNode.outputFormat(forBus: 0),
