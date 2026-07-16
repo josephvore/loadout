@@ -22,6 +22,18 @@
 //                     pauses while thinking do not become punctuation.
 //     --idle <sec>    release the mic after this many idle seconds
 //                     (0 = release right after each take, <0 = hold forever)
+//     --stop-grace <ms>  tail-audio grace after stop before finalize
+//                     (default 150)
+//     --parakeet <v2|v3|off>  second-pass Parakeet TDT ASR (FluidAudio
+//                     CoreML on the Neural Engine). Re-transcribes each take's
+//                     buffered audio for the final — roughly half Apple's
+//                     word error rate at ~0.2s per take. Default off.
+//     --stream <eou160|eou320|off>  first-pass streaming ASR (Parakeet EOU,
+//                     FluidAudio cache-aware streaming encoder). Transcribes
+//                     WHILE you speak and drives the live overlay with
+//                     Parakeet-quality partials in place of Apple's volatile
+//                     results. The batch --parakeet pass still owns the final.
+//                     Default off.
 //
 //   stdin  (one command per line):  start | stop | cancel | quit
 //   stdout (one JSON object per line):
@@ -32,20 +44,21 @@
 //     {"event":"canceled"}                   take discarded
 //     {"event":"error","message":"..."}      something failed
 //
-// Build:  swiftc -O -o ~/bin/hs-dictate main.swift
-// (see build.sh next to this file)
+// Build:  ./build.sh  (SwiftPM release build copied to ~/bin/hs-dictate;
+// the FluidAudio dependency rules out a bare swiftc build)
 
 import AVFoundation
+import FluidAudio
 import Foundation
 import Speech
 
 // Resume a timeout race once. The losing task may be stuck inside an Apple
 // API; it must not keep the caller waiting.
-actor TimeoutRace {
+actor TimeoutRace<Value: Sendable> {
     private var finished = false
 
-    func resume(_ continuation: CheckedContinuation<Bool, Never>,
-                value: Bool) {
+    func resume(_ continuation: CheckedContinuation<Value, Never>,
+                value: Value) {
         guard !finished else { return }
         finished = true
         continuation.resume(returning: value)
@@ -109,7 +122,21 @@ actor Dictator {
     // seen to hang; never make the user wait longer than this — the
     // streamed text is already in hand.
     private let finalizeTimeout = 1.0
-    private let stopTailGraceMs: UInt64 = 300
+    private let stopTailGraceMs: UInt64
+
+    // Second-pass Parakeet recognizer (nil = disabled). It runs concurrently
+    // with Apple's finalize on stop; whichever transcript it produces within
+    // this budget wins, otherwise Apple's text pastes as before.
+    private let parakeet: ParakeetPass?
+    private let parakeetTimeout = 1.2
+
+    // First-pass streaming recognizer (nil = disabled). Drives the live pill
+    // with Parakeet-quality partials in place of Apple's volatile results;
+    // the batch `parakeet` pass above still owns the final transcript.
+    private let streaming: StreamingPass?
+    // Set once a stream partial has arrived this take; from then on Apple's
+    // volatile partials are suppressed so the pill has a single source.
+    private var streamPartialSeen = false
 
     // Shared with the (nonisolated) tap callback. converter/format are only
     // mutated while the engine is stopped; continuation flips at take
@@ -121,7 +148,9 @@ actor Dictator {
 
     init(locale: Locale, fastResults: Bool, punctuation: Bool,
          micIdleSeconds: Double, glossaryPath: String?,
-         correctionsPath: String?, farField: Bool) {
+         correctionsPath: String?, farField: Bool,
+         stopTailGraceMs: UInt64, parakeet: ParakeetPass?,
+         streaming: StreamingPass?) {
         self.locale = locale
         self.fastResults = fastResults
         self.punctuation = punctuation
@@ -129,6 +158,9 @@ actor Dictator {
         self.glossaryPath = glossaryPath
         self.correctionsPath = correctionsPath
         self.farField = farField
+        self.stopTailGraceMs = stopTailGraceMs
+        self.parakeet = parakeet
+        self.streaming = streaming
     }
 
     private func makeSpeechTranscriber() -> SpeechTranscriber {
@@ -269,6 +301,11 @@ actor Dictator {
             input.installTap(onBus: 0, bufferSize: 1024, format: nil) {
                 [weak self] buffer, _ in
                 guard let self else { return }
+                // Parakeet buffers the take's raw audio independently of the
+                // Apple analyzer feed (it self-gates on capture state); the
+                // streaming pass likewise deep-copies and queues each buffer.
+                self.parakeet?.append(buffer)
+                self.streaming?.append(buffer)
                 let params = self.convParams
                 guard let continuation = params.continuation,
                       let outFormat = params.format else { return }
@@ -402,6 +439,9 @@ actor Dictator {
         takeGen += 1
         let gen = takeGen
         convParams.converter?.reset() // drop resampler tail from the last take
+        parakeet?.beginTake()
+        streamPartialSeen = false
+        if streaming?.isReady == true { streaming?.beginTake() }
 
         let (stream, continuation) = AsyncStream.makeStream(of: AnalyzerInput.self)
         inputContinuation = continuation
@@ -494,9 +534,24 @@ actor Dictator {
     private func noteVolatile(_ text: String, gen: Int) {
         guard gen == takeGen, !text.isEmpty else { return }
         lastVolatile = text
-        if recording {
+        // Apple drives the pill only until the stream produces its first
+        // partial (or for the whole take when streaming is off/still loading).
+        // lastVolatile keeps updating regardless, so bestText() stays a valid
+        // fallback for the final if Parakeet's batch pass comes up empty.
+        if recording && !streamPartialSeen {
             emit(["event": "partial", "text": bestText()])
         }
+    }
+
+    // Live partial from the streaming first pass. The first one to arrive
+    // takes the pill for the rest of the take, suppressing Apple's volatile
+    // partials so the overlay has a single, better source.
+    func streamPartial(_ text: String) {
+        guard recording else { return }
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return }
+        streamPartialSeen = true
+        emit(["event": "partial", "text": t, "source": "stream"])
     }
 
     // The best transcript available right now: finalized segments plus the
@@ -527,9 +582,9 @@ actor Dictator {
             try? await Task.sleep(for: .seconds(seconds))
             return false
         }
-        let race = TimeoutRace()
+        let race = TimeoutRace<Bool>()
 
-        let winner = await withCheckedContinuation { continuation in
+        let winner = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
             Task {
                 await race.resume(continuation,
                                   value: await finalizeTask.value)
@@ -558,6 +613,7 @@ actor Dictator {
             return
         }
         recording = false
+        streaming?.endTake() // stop live partials; the final owns the pill now
 
         if !canceled {
             // Let the tap deliver the last buffers generated by the trigger
@@ -566,22 +622,46 @@ actor Dictator {
         }
         finishActiveInput()
 
+        var appleFinalize: Task<Bool, Never>? = nil
         if canceled {
             // Nothing to finalize — discard instantly.
+            parakeet?.cancelTake()
+            streaming?.cancelTake()
             emit(["event": "canceled"])
         } else {
-            _ = await finalizeWithTimeout(finalizeTimeout)
-            emit(["event": "final", "text": bestText()])
+            let takeSamples = parakeet?.endTake() ?? []
+            // Run Apple's finalize and Parakeet concurrently. Parakeet's
+            // transcript wins when it lands inside its budget (it is the
+            // more accurate engine); Apple's bestText() is the fallback and
+            // is only waited on when actually needed.
+            let finalize = Task { await self.finalizeWithTimeout(self.finalizeTimeout) }
+            appleFinalize = finalize
+            var text: String? = nil
+            var engine = recognizerEngine
+            if let parakeet,
+               let pk = await parakeet.transcribe(takeSamples,
+                                                  within: parakeetTimeout) {
+                text = pk
+                engine = "parakeet"
+            }
+            if text == nil {
+                _ = await finalize.value
+                text = bestText()
+            }
+            emit(["event": "final", "text": text ?? "", "engine": engine])
         }
 
         takeGen += 1 // any stragglers from this take are ignored from here on
 
         // The user already has their text; tear the used analyzer down off
         // the critical path (it may be wedged — cancelAndFinishNow copes).
+        // Let a still-running finalize settle first so the two Apple calls
+        // don't race on the same analyzer.
         let stale = analyzer
         let staleResults = resultsTask
         resultsTask = nil
         Task {
+            if let appleFinalize { _ = await appleFinalize.value }
             await stale?.cancelAndFinishNow()
             staleResults?.cancel()
         }
@@ -710,6 +790,13 @@ var micIdleSeconds = 180.0
 var glossaryPath: String?
 var correctionsPath: String?
 var farField = false
+// Tap buffers are ~21 ms at 48 kHz, so 150 ms still catches the release
+// tail with a wide margin while shaving ~150 ms off every stop.
+var stopGraceMs: UInt64 = 150
+// Parakeet second-pass ASR: "v2" (English-only), "v3" (multilingual), "off".
+var parakeetChoice = "off"
+// Streaming first-pass ASR for live partials: "eou160", "eou320", or "off".
+var streamChoice = "off"
 
 var argi = 1
 let argv = CommandLine.arguments
@@ -731,11 +818,36 @@ while argi < argv.count {
     case "--content-hint":
         argi += 1
         if argi < argv.count { farField = argv[argi] == "far-field" }
+    case "--stop-grace":
+        argi += 1
+        if argi < argv.count { stopGraceMs = UInt64(argv[argi]) ?? 150 }
+    case "--parakeet":
+        argi += 1
+        if argi < argv.count { parakeetChoice = argv[argi] }
+    case "--stream":
+        argi += 1
+        if argi < argv.count { streamChoice = argv[argi] }
     default:
         localeID = argv[argi]
     }
     argi += 1
 }
+
+let parakeetVersion: AsrModelVersion? = switch parakeetChoice {
+case "v2": .v2
+case "v3": .v3
+default: nil
+}
+let parakeet: ParakeetPass? = parakeetVersion != nil ? ParakeetPass() : nil
+
+// Streaming first pass: Parakeet EOU cache-aware streaming encoder for the
+// live pill. 160 ms chunks = lowest latency; 320 ms = a bit more accurate.
+let streamVariant: StreamingModelVariant? = switch streamChoice {
+case "eou160": .parakeetEou160ms
+case "eou320": .parakeetEou320ms
+default: nil
+}
+let streaming: StreamingPass? = streamVariant.map { StreamingPass(variant: $0) }
 
 let dictator = Dictator(locale: Locale(identifier: localeID),
                         fastResults: fastResults,
@@ -743,7 +855,10 @@ let dictator = Dictator(locale: Locale(identifier: localeID),
                         micIdleSeconds: micIdleSeconds,
                         glossaryPath: glossaryPath,
                         correctionsPath: correctionsPath,
-                        farField: farField)
+                        farField: farField,
+                        stopTailGraceMs: stopGraceMs,
+                        parakeet: parakeet,
+                        streaming: streaming)
 
 // Request mic permission up front so the TCC prompt (attributed to
 // Hammerspoon when spawned from hs.task) happens at load, not first use.
@@ -762,16 +877,68 @@ do {
 
 emit(await dictator.readyFields())
 
-// Command loop: read stdin lines forever. readLine blocks, so run it off
-// the main actor and forward commands.
-while let line = readLine(strippingNewline: true) {
-    switch line.trimmingCharacters(in: .whitespaces) {
+// Parakeet loads AFTER ready so Apple prep and the first take are never
+// blocked; takes that stop before it lands simply use Apple finals.
+// Detached (not a plain Task): top-level code is @MainActor, and an
+// inherited-isolation Task would need the main actor to resume after each
+// await — but the readLine loop below blocks the main thread between
+// commands, so its continuations would never run. Detached keeps the whole
+// load on the global executor.
+if let parakeet, let parakeetVersion {
+    Task.detached { await parakeet.prepare(version: parakeetVersion) }
+}
+
+// Streaming first pass loads the same way — off the ready path, in the
+// background. Route its partials through the actor so it can arbitrate with
+// Apple's until the stream warms; the hop is cheap (~once per 160 ms chunk).
+if let streaming {
+    streaming.setPartialHandler { text in
+        Task { await dictator.streamPartial(text) }
+    }
+    Task.detached { await streaming.prepare() }
+}
+
+// Command loop: read stdin lines forever. readLine() blocks its thread
+// waiting for the next line, so run it on a detached task and await the
+// result. Awaiting frees the main actor while we wait, so the concurrent
+// Parakeet load (also off the main actor) makes progress between commands
+// instead of deadlocking behind a blocked main thread.
+while let line = await Task.detached(operation: {
+    readLine(strippingNewline: true)
+}).value {
+    let command = line.trimmingCharacters(in: .whitespaces)
+    switch command {
     case "start":  await dictator.start()
     case "stop":   await dictator.stop()
     case "cancel": await dictator.cancel()
     case "reload-context": await dictator.reloadContext()
     case "quit":   exit(0)
     case "":       continue
-    default:       emitError("unknown command: \(line)")
+    default:
+        // parakeet-file <path> — debug: transcribe an audio file through
+        // Parakeet without touching the mic.
+        if command.hasPrefix("parakeet-file ") {
+            let path = String(command.dropFirst("parakeet-file ".count))
+                .trimmingCharacters(in: .whitespaces)
+            let text = await parakeet?.transcribeFile(path)
+            emit(["event": "diagnostic",
+                  "message": "parakeet-file: " + (text ?? "(unavailable)")])
+        } else if command.hasPrefix("parakeet-selftest ") {
+            // Exercises the real append()/endTake()/transcribe() take path.
+            let path = String(command.dropFirst("parakeet-selftest ".count))
+                .trimmingCharacters(in: .whitespaces)
+            let text = await parakeet?.selfTest(path, within: 5.0)
+            emit(["event": "diagnostic",
+                  "message": "parakeet-selftest: " + (text ?? "(unavailable)")])
+        } else if command.hasPrefix("stream-file ") {
+            // Drive a file through the streaming first pass, counting partials.
+            let path = String(command.dropFirst("stream-file ".count))
+                .trimmingCharacters(in: .whitespaces)
+            let text = await streaming?.transcribeFileStreaming(path)
+            emit(["event": "diagnostic",
+                  "message": "stream-file: " + (text ?? "(unavailable)")])
+        } else {
+            emitError("unknown command: \(line)")
+        }
     }
 }
