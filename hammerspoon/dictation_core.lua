@@ -126,7 +126,8 @@ end
 
 local EXPLICIT_CORRECTION_CUES = {
   "actually no", "let me change that", "scratch that", "never mind",
-  "what I mean is", "let me rephrase",
+  "what i mean is", "let me rephrase", "no wait", "wait no", "i meant",
+  "sorry i mean",
 }
 
 function M.hasExplicitCorrection(text)
@@ -261,19 +262,77 @@ function M.profileForApp(appName, override)
   return MESSAGE_APPS[name] and "Message" or "Prompt"
 end
 
-function M.shouldUseAI(text, profile)
+-- Wispr-style: every ordinary take gets the LLM cleanup pass. Only the
+-- Literal profile and tiny acknowledgements ("ok", "yes please") skip it —
+-- they gain nothing and latency matters most there.
+function M.shouldUseAI(text, profile, opts)
+  opts = opts or {}
   if profile == "Literal" then return false, "literal" end
-  if M.hasExplicitCorrection(text) then return true end
-  return false, "no_explicit_correction"
+  if wordCount(text) < (opts.minWords or 4)
+      or #tostring(text or "") < (opts.minChars or 12) then
+    return false, "too_short"
+  end
+  return true
 end
 
 function M.maxOutputTokens(text)
-  return math.min(512, math.max(32, math.ceil(wordCount(text) * 1.8)))
+  return math.min(1200, math.max(64, math.ceil(wordCount(text) * 2)))
 end
 
+-- Capitalized words the recognizer already nails; learning them would only
+-- burn glossary/context slots.
+local PROPER_NOUN_STOPLIST = {}
+for word in ([[
+  i'm i'll i've i'd it's that's what's here's there's let's
+  monday tuesday wednesday thursday friday saturday sunday
+  january february march april june july august september october
+  november december
+  mr mrs ms dr jr sr st ave
+  usa ceo cto cfo coo faq pdf url api asap fyi lol omg tldr aka diy eta
+  google apple microsoft amazon iphone ipad mac macos ios android windows
+  english spanish french german american european internet wifi bluetooth
+]]):gmatch("%S+") do
+  PROPER_NOUN_STOPLIST[word] = true
+end
+
+-- Candidate proper nouns worth auto-learning into the glossary: mixed-case
+-- tokens anywhere ("EquipFlow", "GitHub", "McCoy") and capitalized words
+-- that are NOT at a sentence start. `known` is a set of lowercased words
+-- already covered by the glossary/corrections. Returns first-seen spellings
+-- in appearance order.
+function M.properNounCandidates(text, known)
+  known = known or {}
+  local out, seen = {}, {}
+  local sentenceStart = true
+  for token in tostring(text or ""):gmatch("%S+") do
+    local word = token:match("^%p*(.-)%p*$") or ""
+    local base = word:gsub("'s$", "")
+    if base ~= "" then
+      local lower = base:lower()
+      local wordish = base:match("^%a[%w'%.%-]*$") ~= nil
+      local innerUpper = base:sub(2):match("%u") ~= nil
+      local leadUpper = base:match("^%u") ~= nil
+      if wordish and #base >= 3
+          and not PROPER_NOUN_STOPLIST[lower] and not known[lower]
+          and (innerUpper or (leadUpper and not sentenceStart))
+          and not seen[lower] then
+        seen[lower] = true
+        out[#out + 1] = base
+      end
+      sentenceStart = token:match("[%.!%?][\"')%]]*$") ~= nil
+    end
+  end
+  return out
+end
+
+-- Compare numerals by their digits only, so "7:30"/"730" and "4,250"/"4250"
+-- count as the same number while a genuinely changed digit still trips.
 local function numeralSet(text)
   local found, values = {}, {}
-  for n in tostring(text):gmatch("%d[%d,%.]*") do found[n] = true end
+  for n in tostring(text):gmatch("%d[%d,%.%:]*") do
+    local canon = n:gsub("[%,%.%:]", "")
+    found[canon] = true
+  end
   for n in pairs(found) do values[#values + 1] = n end
   table.sort(values)
   return table.concat(values, "|")
@@ -293,20 +352,26 @@ local function normalizedTokens(text)
   return tokens
 end
 
-local function tokensEqual(a, b)
-  if #a ~= #b then return false end
-  for i = 1, #a do if a[i] ~= b[i] then return false end end
-  return true
-end
-
-local function orderedSubsequence(needle, haystack)
-  local pos = 1
-  for _, token in ipairs(needle) do
-    while pos <= #haystack and haystack[pos] ~= token do pos = pos + 1 end
-    if pos > #haystack then return false end
-    pos = pos + 1
+-- Longest common subsequence over token arrays (rolling-row DP). Transcripts
+-- are at most a few hundred tokens, so this stays in the low milliseconds.
+local function lcsLength(a, b)
+  local n, m = #a, #b
+  if n == 0 or m == 0 then return 0 end
+  local dp = {}
+  for j = 0, m do dp[j] = 0 end
+  for i = 1, n do
+    local prevDiag = 0
+    for j = 1, m do
+      local above = dp[j]
+      if a[i] == b[j] then
+        dp[j] = prevDiag + 1
+      elseif dp[j - 1] > dp[j] then
+        dp[j] = dp[j - 1]
+      end
+      prevDiag = above
+    end
   end
-  return true
+  return dp[m]
 end
 
 local function correctionTail(tokens)
@@ -314,6 +379,8 @@ local function correctionTail(tokens)
     { "actually", "no" }, { "let", "me", "change", "that" },
     { "scratch", "that" }, { "never", "mind" },
     { "what", "i", "mean", "is" }, { "let", "me", "rephrase" },
+    { "no", "wait" }, { "wait", "no" }, { "i", "meant" },
+    { "sorry", "i", "mean" },
   }
   local tailStart = nil
   for i = 1, #tokens do
@@ -329,15 +396,6 @@ local function correctionTail(tokens)
   local tail = {}
   for i = tailStart, #tokens do tail[#tail + 1] = tokens[i] end
   return tail
-end
-
-local function endsWithTokens(tokens, suffix)
-  if not suffix or #suffix > #tokens then return false end
-  local offset = #tokens - #suffix
-  for i = 1, #suffix do
-    if tokens[offset + i] ~= suffix[i] then return false end
-  end
-  return true
 end
 
 local LEAK_MARKERS = {
@@ -361,22 +419,37 @@ function M.validateAIOutput(input, output)
     end
   end
   local inputTokens, outputTokens = normalizedTokens(input), normalizedTokens(output)
+  if #outputTokens == 0 then return false, "empty" end
   local hasCorrection = M.hasExplicitCorrection(input)
   local ratio = #output / math.max(1, #input)
-  if ratio > 1.45 or (not hasCorrection and ratio < 0.45) then
-    return false, "length_ratio"
+  if ratio > 1.45 then return false, "length_ratio" end
+
+  -- Cleanup means deleting speech noise and fixing punctuation, never
+  -- rewriting: nearly every output word must come from the input, in order.
+  -- The small allowance covers glue insertions like "gonna" -> "going to".
+  local lcs = lcsLength(inputTokens, outputTokens)
+  if lcs < math.ceil(#outputTokens * 0.85) then
+    return false, "words_introduced"
   end
-  if not hasCorrection then
-    if not tokensEqual(inputTokens, outputTokens) then
-      return false, "words_changed"
+
+  if hasCorrection then
+    -- Backtracking takes are allowed large deletions — that is the point —
+    -- but the replacement wording (after the last cue) has to survive.
+    if lcs < math.min(#inputTokens, 2) then return false, "over_deleted" end
+    local tail = correctionTail(inputTokens)
+    if tail and #tail > 0 then
+      local window = {}
+      for i = math.max(1, #outputTokens - #tail - 5), #outputTokens do
+        window[#window + 1] = outputTokens[i]
+      end
+      if lcsLength(tail, window) < math.ceil(#tail * 0.6) then
+        return false, "correction_tail_changed"
+      end
     end
   else
-    local tail = correctionTail(inputTokens)
-    if not orderedSubsequence(outputTokens, inputTokens) then
-      return false, "words_introduced"
-    end
-    if not endsWithTokens(outputTokens, tail) then
-      return false, "correction_tail_changed"
+    -- No backtracking: fillers and false starts may go, content may not.
+    if lcs < math.floor(#inputTokens * 0.55 + 0.5) then
+      return false, "over_deleted"
     end
   end
   return true

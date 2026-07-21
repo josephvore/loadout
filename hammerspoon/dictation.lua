@@ -1,4 +1,6 @@
--- dictation.lua — push-to-talk voice dictation, fully on-device.
+-- dictation.lua — push-to-talk voice dictation. Speech-to-text is fully
+-- on-device; a fast LLM cleanup pass (Wispr Flow-style) polishes each take
+-- before paste, falling back to the raw transcript on timeout or failure.
 -- Load from ~/.hammerspoon/init.lua with: pcall(function() require("dictation").start() end)
 --
 --   Right⌘, held      push-to-talk: speak while holding, release to paste
@@ -10,11 +12,13 @@
 -- is down means you were typing a normal ⌘-shortcut — dictation silently
 -- cancels and the shortcut goes through untouched.
 --
--- Speech-to-text runs locally via ~/bin/hs-dictate, a small Swift daemon
--- built on Apple's SpeechAnalyzer (macOS 26). The daemon stays warm between
--- takes with the model loaded AND the mic engine hot (see micIdleSeconds),
--- and transcribes WHILE you speak, so text is ready almost instantly when
--- you stop. No cloud, no cost, works offline.
+-- Speech-to-text runs locally via ~/bin/hs-dictate, a small Swift daemon.
+-- Apple's SpeechAnalyzer (macOS 26) streams live partials WHILE you speak;
+-- on stop, Parakeet TDT (FluidAudio CoreML on the Neural Engine) re-reads
+-- the take's audio for a markedly more accurate final transcript, falling
+-- back to Apple's text automatically. The daemon stays warm between takes
+-- with models loaded AND the mic engine hot (see micIdleSeconds). No cloud
+-- STT, no cost, works offline.
 --
 -- Build the daemon (source lives next to this file):
 --   ~/dotfiles/hammerspoon/hs-dictate/build.sh
@@ -44,6 +48,34 @@ local config = {
   -- off after a few idle minutes.
   micIdleSeconds = -1,
 
+  -- How long the daemon keeps listening after stop for tail audio before
+  -- finalizing. Tap buffers are ~21ms, so 150ms is a wide margin; raise it
+  -- if the last word of takes starts getting clipped.
+  stopGraceMs = 150,
+
+  -- Second-pass ASR: "v3" | "v2" | "off". Parakeet TDT 0.6b (FluidAudio
+  -- CoreML, Apple Neural Engine) re-transcribes each take's audio on stop at
+  -- roughly half Apple's word error rate, ~0.2s per take. Apple partials
+  -- still drive the live pill; Apple finals remain the automatic fallback
+  -- while the model loads or if Parakeet is slow. First run downloads
+  -- ~450MB to ~/Library/Application Support/FluidAudio (one-time; warm
+  -- loads are ~0.2s thereafter). "v2" is English-only and the right default
+  -- for this en_US app — equal-or-better English recall than the
+  -- multilingual "v3", with a tighter decode and no language-ID overhead.
+  parakeet = "v2",
+
+  -- First-pass STREAMING ASR that drives the live pill: "eou160" | "eou320" |
+  -- "off". Parakeet EOU 120M (FluidAudio cache-aware streaming encoder,
+  -- Neural Engine) transcribes WHILE you speak and updates the overlay
+  -- word-by-word — Parakeet-quality live text in place of Apple's weaker
+  -- volatile partials (the ChatGPT/Groq-style live feel). The batch parakeet
+  -- pass above still owns the final that gets pasted, so live text is snappy
+  -- and the pasted text stays best-in-class. "eou160" = lowest latency (160ms
+  -- chunks); "eou320" = a little more accurate. First run downloads ~120MB to
+  -- ~/Library/Application Support/FluidAudio (one-time). Until it loads (or if
+  -- off), Apple partials drive the pill as before.
+  stream = "eou160",
+
   -- Trigger key. Must be a bare MODIFIER key name from hs.keycodes.map
   -- ("rightcmd", "rightalt", "rightctrl", "rightshift", "cmd", …); it is
   -- watched via a flagsChanged event tap, so ordinary keys won't work here.
@@ -71,14 +103,21 @@ local config = {
   -- whatever was there before).
   keepOnClipboard = true,
 
+  -- Mark transcripts on the pasteboard with org.nspasteboard.ConcealedType
+  -- (the Wispr Flow trick) so clipboard managers don't archive every take.
+  -- Plain Cmd+V is unaffected.
+  concealPaste = true,
+
   -- The instant you stop a take, the live transcript is written to the
   -- clipboard as a backup — BEFORE finalize runs — so even if everything
   -- downstream hangs or crashes, Cmd+V has your words.
   clipboardBackup = true,
 
-  -- Light cleanup sends text to OpenAI only for explicit backtracking cues.
-  -- Ordinary takes stay local and paste immediately after deterministic
-  -- glossary/filler cleanup.
+  -- Wispr-style cleanup: every ordinary take goes through the LLM polish
+  -- (fillers, false starts, backtracking, pause-punctuation) via the fastest
+  -- provider with a Keychain key — see providers in refine.lua. On timeout
+  -- or failure the locally cleaned transcript pastes instead, so words are
+  -- never lost, just less polished.
   autoRefine = true,
   autoRefineTimeout = 2.25,
   autoRefineMinChars = 12,   -- skip only tiny acknowledgements
@@ -94,16 +133,27 @@ local config = {
   correctionMemoryPath = os.getenv("HOME") .. "/dotfiles/hammerspoon/dictation_corrections.tsv",
   snippetsPath = os.getenv("HOME") .. "/dotfiles/hammerspoon/dictation_snippets.tsv",
 
+  -- Wispr-style context injection: give the cleanup LLM the frontmost app
+  -- name and up to contextMaxChars of text before the cursor so it can match
+  -- mid-sentence capitalization and in-document terminology. The snippet is
+  -- sent to the same cleanup provider as the transcript itself; set to false
+  -- if that ever feels too chatty.
+  contextInjection = true,
+  contextMaxChars = 240,
+
+  -- Auto-learn proper nouns: a new name/product word seen in this many
+  -- pasted takes gets appended to the glossary and pushed into the
+  -- recognizer's context, so the ASR stops mishearing it. Counts persist in
+  -- properNounCountsPath (gitignored, next to the logs).
+  glossaryAutoLearn = true,
+  glossaryAutoLearnThreshold = 2,
+  glossaryAutoLearnMaxTerms = 90, -- stop before crowding the 100-slot context
+  properNounCountsPath = os.getenv("HOME")
+    .. "/dotfiles/hammerspoon/logs/dictation_proper_nouns.tsv",
+
   -- Spoken editing commands: "new paragraph", "scratch that", "comma",
   -- "open quote", "send" (when dictated alone), etc.
   voiceCommands = true,
-
-  -- Extra local cleanup only for longer rambly takes before the LLM pass.
-  longDictationPolish = true,
-  longDictationMinWords = 35,
-
-  -- Rejoin short SpeechAnalyzer fragments into sentence-like text.
-  joinChoppyFragments = true,
 
   -- Write short transcript samples into logs so agents can debug actual
   -- capture/cleanup failures. Logs are local and gitignored.
@@ -187,8 +237,10 @@ local contextTermCount = 0
 local lastTotalLatencyMs = nil
 local lastAILatencyMs = nil
 local lastAIModel = nil
+local lastAIProvider = nil
 local lastAIReason = nil
 local recognizerEngine = nil
+local lastFinalEngine = nil
 
 local function transcriptSample(text)
   if not config.logTranscriptSamples then return nil end
@@ -337,20 +389,6 @@ local function trim(s)
   return cleaned
 end
 
-local function lowerFirst(s)
-  local cleaned = s:gsub("^([\"'(%[]*)(%u)", function(prefix, c)
-    return prefix .. c:lower()
-  end)
-  return cleaned
-end
-
-local function sentenceCase(s)
-  local cleaned = s:gsub("^([\"'(%[]*)(%l)", function(prefix, c)
-    return prefix .. c:upper()
-  end)
-  return cleaned
-end
-
 local function wordCount(s)
   local n = 0
   for _ in s:gmatch("%S+") do n = n + 1 end
@@ -367,91 +405,6 @@ local function transcriptLogFields(text)
   return fields
 end
 
-local function splitList(s)
-  local out = {}
-  for item in (s or ""):gmatch("[^,|]+") do
-    local cleaned = trim(item)
-    if cleaned ~= "" then out[#out + 1] = cleaned end
-  end
-  return out
-end
-
-local function charPattern(c)
-  if c:match("%a") then
-    return "[" .. c:lower() .. c:upper() .. "]"
-  end
-  if c:match("%s") then return "%s+" end
-  return (c:gsub("([^%w])", "%%%1"))
-end
-
-local function phrasePattern(phrase)
-  local parts = {}
-  for i = 1, #phrase do
-    parts[#parts + 1] = charPattern(phrase:sub(i, i))
-  end
-  return "%f[%w]" .. table.concat(parts) .. "%f[%W]"
-end
-
-local function readLines(path)
-  local f = io.open(path or "", "r")
-  if not f then return {} end
-  local lines = {}
-  for line in f:lines() do lines[#lines + 1] = line end
-  f:close()
-  return lines
-end
-
-local function loadGlossaryReplacements()
-  local replacements = {
-    { from = "right command", to = "Right Command" },
-    { from = "whisper flow", to = "Wispr Flow" },
-    { from = "whisperflow", to = "Wispr Flow" },
-    { from = "wisper flow", to = "Wispr Flow" },
-    { from = "more liable", to = "more reliable" },
-  }
-
-  for _, line in ipairs(readLines(config.glossaryPath)) do
-    local cleaned = trim((line:gsub("#.*$", "")))
-    if cleaned ~= "" then
-      local canonical, variants = cleaned:match("^(.-)%s*=%s*(.+)$")
-      if not canonical then canonical, variants = cleaned:match("^(.-)%s*=>%s*(.+)$") end
-      if canonical then
-        canonical = trim(canonical)
-        for _, variant in ipairs(splitList(variants)) do
-          replacements[#replacements + 1] = { from = variant, to = canonical }
-        end
-      else
-        replacements[#replacements + 1] = { from = cleaned, to = cleaned }
-      end
-    end
-  end
-
-  for _, line in ipairs(readLines(config.correctionMemoryPath)) do
-    local cleaned = trim((line:gsub("#.*$", "")))
-    if cleaned ~= "" then
-      local from, to = cleaned:match("^(.-)\t(.+)$")
-      if not from then from, to = cleaned:match("^(.-)%s*=>%s*(.+)$") end
-      if from and to then
-        replacements[#replacements + 1] = { from = trim(from), to = trim(to) }
-      end
-    end
-  end
-
-  table.sort(replacements, function(a, b)
-    return #a.from > #b.from
-  end)
-  return replacements
-end
-
-local function applyPhraseReplacements(text)
-  for _, r in ipairs(loadGlossaryReplacements()) do
-    if r.from ~= "" and r.to ~= "" and r.from ~= r.to then
-      text = text:gsub(phrasePattern(r.from), function() return r.to end)
-    end
-  end
-  return text
-end
-
 local function appendCorrection(from, to)
   from, to = trim(from), trim(to)
   if from == "" or to == "" or from:lower() == to:lower() then
@@ -462,169 +415,6 @@ local function appendCorrection(from, to)
   f:write(from, "\t", to, "\n")
   f:close()
   return true
-end
-
-local function applyScratchThat(text)
-  if not config.voiceCommands then return text end
-  text = text:gsub("^.*%f[%a][Ss]cratch all that%f[%A][,%.%!%?%s]*", "")
-  text = text:gsub("^.*%f[%a][Nn]ever mind%f[%A][,%.%!%?%s]*", "")
-
-  while true do
-    local s, e = text:find("%f[%a][Ss]cratch that%f[%A]")
-    if not s then s, e = text:find("%f[%a][Dd]elete that%f[%A]") end
-    if not s then break end
-
-    local before = text:sub(1, s - 1):gsub("[%s,%.%!%?;:]+$", "")
-    local after = text:sub(e + 1):gsub("^[%s,%.%!%?;:]+", "")
-    local cut = 0
-    local pos = 1
-    while true do
-      local _, boundaryEnd = before:find("[%.%!%?]%s*", pos)
-      if not boundaryEnd then break end
-      cut = boundaryEnd
-      pos = boundaryEnd + 1
-    end
-    if cut == 0 then
-      pos = 1
-      while true do
-        local _, boundaryEnd = before:find("[,;:]%s*", pos)
-        if not boundaryEnd then break end
-        cut = boundaryEnd
-        pos = boundaryEnd + 1
-      end
-    end
-    before = trim(before:sub(1, cut))
-    text = trim((before ~= "" and (before .. " ") or "") .. after)
-  end
-  return text
-end
-
-local function applyVoiceCommands(text)
-  if not config.voiceCommands then return text end
-  text = applyScratchThat(text)
-  text = text
-    :gsub("%f[%a][Nn]ew paragraph%f[%A]", "\n\n")
-    :gsub("%f[%a][Nn]ew line%f[%A]", "\n")
-    :gsub("%f[%a][Ll]ine break%f[%A]", "\n")
-    :gsub("%f[%a][Oo]pen quote%f[%A]", "\"")
-    :gsub("%f[%a][Cc]lose quote%f[%A]", "\"")
-    :gsub("%f[%a][Ee]nd quote%f[%A]", "\"")
-    :gsub("%f[%a][Oo]pen paren%f[%A]", "(")
-    :gsub("%f[%a][Cc]lose paren%f[%A]", ")")
-    :gsub("%f[%a][Oo]pen parenthesis%f[%A]", "(")
-    :gsub("%f[%a][Cc]lose parenthesis%f[%A]", ")")
-    :gsub("%f[%a][Qq]uestion mark%f[%A]", "?")
-    :gsub("%f[%a][Ee]xclamation point%f[%A]", "!")
-    :gsub("%f[%a][Ee]xclamation mark%f[%A]", "!")
-    :gsub("%f[%a][Ss]emicolon%f[%A]", ";")
-    :gsub("%f[%a][Cc]olon%f[%A]", ":")
-    :gsub("%f[%a][Cc]omma%f[%A]", ",")
-    :gsub("%f[%a][Pp]eriod%f[%A]", ".")
-    :gsub("%f[%a][Ff]ull stop%f[%A]", ".")
-    :gsub("[ \t]+([,%.%!%?%;:%)])", "%1")
-    :gsub("([%(])%s+", "%1")
-    :gsub("([\"%(])%s+", "%1")
-    :gsub("[ \t]+([\"%)])", "%1")
-  return text
-end
-
-local function polishLongDictation(text)
-  if not config.longDictationPolish then return text end
-  if wordCount(text) < (config.longDictationMinWords or 35) then return text end
-
-  text = text
-    :gsub("[, ]+%f[%a][Uu]h%f[%A][, ]+", " ")
-    :gsub("[, ]+%f[%a][Uu]m%f[%A][, ]+", " ")
-    :gsub("[, ]+%f[%a][Ee]r%f[%A][, ]+", " ")
-    :gsub("%f[%a][Yy]ou know,%s*", "")
-    :gsub("%f[%a][Ii] mean,%s*", "")
-    :gsub("%f[%a][Ii]'m gonna%f[%A]", "I'm going to")
-    :gsub("%f[%a][Ii]m gonna%f[%A]", "I'm going to")
-    :gsub("%f[%a][Gg]onna%f[%A]", "going to")
-    :gsub("%f[%a][Ww]anna%f[%A]", "want to")
-    :gsub("%f[%a][Uu]se,%s+[Uu]se%s+", "Use ")
-    :gsub("%f[%a][Tt]he,%s+([Ii] like)%f[%A]", "%1")
-    :gsub("%f[%a]on long,%s+sessions%f[%A]", "on long sessions")
-    :gsub(",%s+([Aa]nd)%s+", " %1 ")
-    :gsub(",%s+([Bb]ut)%s+", " %1 ")
-    :gsub(",%s+([Oo]r)%s+", " %1 ")
-    :gsub(",%s+([Ss]o)%s+", " %1 ")
-    :gsub(",%s+([Bb]ecause)%s+", " %1 ")
-    :gsub(",%s+([Ww]hen)%s+", " %1 ")
-    :gsub(",%s+([Ii]f)%s+", " %1 ")
-    :gsub(",%s+([Ww]hile)%s+", " %1 ")
-    :gsub("[ \t]+", " ")
-  return text
-end
-
-local function isStandaloneFragment(s)
-  local compact = trim(s):lower():gsub("[%.%!%?]+$", "")
-  local standalone = {
-    ok = true, okay = true, yes = true, no = true, thanks = true,
-    ["thank you"] = true, sure = true, great = true,
-  }
-  return standalone[compact] or false
-end
-
-local function shouldJoinFragment(s)
-  local compact = trim(s):lower()
-  if compact == "" then return false end
-  if isStandaloneFragment(compact) then
-    return false
-  end
-  if compact:match("^[\"']") then return false end
-  if wordCount(compact) <= 2 then return true end
-  local first = compact:match("^(%a+)")
-  local joinStarters = {
-    ["and"] = true, ["but"] = true, ["or"] = true, so = true,
-    because = true, with = true, without = true, to = true, ["for"] = true,
-    from = true, of = true, ["in"] = true, on = true, as = true,
-    that = true, which = true,
-  }
-  return joinStarters[first] or false
-end
-
-local function joinChoppyFragments(text)
-  local out = {}
-  local pos = 1
-  while true do
-    local s, e, seg, punc = text:find("([^%.%!%?]+)([%.%!%?])", pos)
-    if not s then break end
-    local fragment = trim(seg)
-    if fragment ~= "" then
-      if #out > 0 and shouldJoinFragment(fragment)
-          and not isStandaloneFragment(out[#out]) then
-        out[#out] = out[#out]:gsub("[%。%.%!%?]+$", "") ..
-          ", " .. lowerFirst(fragment) .. punc
-      else
-        out[#out + 1] = sentenceCase(fragment) .. punc
-      end
-    end
-    pos = e + 1
-  end
-
-  local tail = trim(text:sub(pos))
-  if tail ~= "" then
-    if #out > 0 and shouldJoinFragment(tail)
-        and not isStandaloneFragment(out[#out]) then
-      out[#out] = out[#out]:gsub("[%。%.%!%?]+$", "") ..
-        ", " .. lowerFirst(tail)
-    else
-      out[#out + 1] = sentenceCase(tail)
-    end
-  end
-
-  if #out == 0 then return text end
-  return table.concat(out, " ")
-end
-
-local function joinChoppyParagraphs(text)
-  if not text:find("\n") then return joinChoppyFragments(text) end
-  local out = {}
-  for para in (text .. "\n\n"):gmatch("(.-)\n\n") do
-    out[#out + 1] = joinChoppyFragments(para)
-  end
-  return table.concat(out, "\n\n")
 end
 
 local function cleanupTranscript(text)
@@ -825,6 +615,19 @@ end
 -- PASTE
 ----------------------------------------------------------------
 
+-- Transcripts go on the pasteboard marked concealed so clipboard managers
+-- skip them; the user's real clipboard history stays theirs. Restores of
+-- the ORIGINAL clipboard use plain setContents.
+local function setClipboardTranscript(text)
+  hs.pasteboard.setContents(text)
+  if config.concealPaste then
+    pcall(hs.pasteboard.writeDataForUTI, nil,
+      "org.nspasteboard.ConcealedType", "1", true)
+  end
+end
+
+local learnProperNouns -- defined after the daemon plumbing (needs send())
+
 -- Should the transcript get a leading space? True when the character just
 -- before the cursor is a non-space (we'd butt up against existing text).
 local function needsLeadingSpace()
@@ -850,6 +653,26 @@ local function needsLeadingSpace()
   return name ~= nil and name == lastPasteApp and not typedSinceLastPaste
 end
 
+-- Up to maxChars of text immediately before the cursor in the focused
+-- field (accessibility), or nil when the app doesn't expose AX text. Feeds
+-- capitalization/terminology context to the cleanup LLM.
+local function beforeCursorText(maxChars)
+  local ok, text = pcall(function()
+    local focused = hs.axuielement.systemWideElement()
+      :attributeValue("AXFocusedUIElement")
+    if not focused then return nil end
+    local range = focused:attributeValue("AXSelectedTextRange")
+    local loc = range and (range.location or range.loc)
+    if not loc or loc == 0 then return nil end
+    local len = math.min(loc, maxChars)
+    local s = focused:parameterizedAttributeValue("AXStringForRange",
+      { location = loc - len, length = len })
+    return (type(s) == "string" and s ~= "") and s or nil
+  end)
+  if ok then return text end
+  return nil
+end
+
 local function captureTarget()
   local app = hs.application.frontmostApplication()
   local focused = nil
@@ -860,6 +683,8 @@ local function captureTarget()
     pid = app and app:pid() or nil,
     app = app and app:name() or nil,
     focusedField = focused,
+    beforeCursor = config.contextInjection
+      and beforeCursorText(config.contextMaxChars or 240) or nil,
   }
 end
 
@@ -882,7 +707,7 @@ local function pasteTranscript(text, target)
   if not config.keepOnClipboard then
     restoreTo = savedClipboard
   end
-  hs.pasteboard.setContents(text)
+  setClipboardTranscript(text)
   hs.timer.doAfter(config.pasteDelay, function()
     local current = hs.application.frontmostApplication()
     if not target or not current or current:pid() ~= target.pid then
@@ -906,6 +731,7 @@ local function pasteTranscript(text, target)
       app = lastPasteApp,
       pasteQueueMs = lastPasteQueueMs,
     })
+    if learnProperNouns then learnProperNouns(text) end
     -- Our own synthetic ⌘V trips the typed-flag; clear it once it lands.
     hs.timer.doAfter(0.3, function() typedSinceLastPaste = false end)
     if restoreTo then
@@ -959,20 +785,6 @@ local function handleDictationCommand(text)
   return false
 end
 
-local LIGHT_CLEANUP_INSTRUCTIONS =
-  "You are a conservative speech-to-text cleanup pass. Return only the "
-  .. "corrected transcript. Add natural punctuation and capitalization. "
-  .. "Correct an obvious speech-recognition error only when the surrounding "
-  .. "sentence makes the intended wording highly likely. Resolve explicit "
-  .. "backtracking: when the speaker says actually no, let me change that, "
-  .. "scratch that, never mind, what I mean is, or let me rephrase, delete "
-  .. "the abandoned wording and correction cue while keeping only the "
-  .. "replacement wording. Example: Input: Let us meet at five actually no "
-  .. "let me change that six. Output: Let us meet at six. Otherwise preserve "
-  .. "every claim, name, number, negation, modal verb, and content word. Do "
-  .. "not paraphrase, summarize, reorganize, or make the writing more concise. "
-  .. "If uncertain, leave the wording unchanged."
-
 local function flushPendingDelivery(reason)
   local pending = pendingDelivery
   if not pending then return end
@@ -1007,7 +819,10 @@ local function deliverTranscript(text)
   end
   if handleDictationCommand(text) then return end
   local refine = nil
-  local shouldPolish, skipReason = core.shouldUseAI(text, activeProfile)
+  local shouldPolish, skipReason = core.shouldUseAI(text, activeProfile, {
+    minWords = config.autoRefineMinWords,
+    minChars = config.autoRefineMinChars,
+  })
   if not config.autoRefine then shouldPolish, skipReason = false, "disabled" end
   if cleanupMeta and cleanupMeta.snippet then
     shouldPolish, skipReason = false, "snippet"
@@ -1035,7 +850,7 @@ local function deliverTranscript(text)
     return
   end
 
-  hs.pasteboard.setContents(text) -- local backup while we wait
+  setClipboardTranscript(text) -- local backup while we wait
   local polishStartMs = nowMs()
   takeSequence = takeSequence + 1
   local pending = {
@@ -1066,6 +881,7 @@ local function deliverTranscript(text)
     play(config.soundStop)
     lastAILatencyMs = elapsedMs(polishStartMs)
     lastAIModel = meta and meta.model or lastAIModel
+    lastAIProvider = meta and meta.provider or lastAIProvider
     lastAIReason = reason or (meta and meta.fallbackReason) or nil
     if result ~= text then
       log.info("dictation polish finished", {
@@ -1105,8 +921,12 @@ local function deliverTranscript(text)
       end
       finishWith(text, "api_failure:" .. tostring(msg))
     end, {
-      systemPrompt = LIGHT_CLEANUP_INSTRUCTIONS,
+      profile = activeProfile,
       maxOutputTokens = core.maxOutputTokens(text),
+      context = activeTarget and {
+        app = activeTarget.app,
+        beforeCursor = activeTarget.beforeCursor,
+      } or nil,
     })
 end
 
@@ -1127,17 +947,51 @@ local function onStdout(_, chunk)
       if ok and type(event) == "table" then
         handleEvent(event)
       else
-        log.error("daemon emitted invalid json", { line = line })
+        -- The CoreML/E5RT runtime prints a benign, newline-less shape-
+        -- inference exception during Parakeet warmup, which can glue itself
+        -- onto the front of the next JSON line. Recover the JSON tail if one
+        -- is present so the event survives; only genuinely unparseable
+        -- output is an error.
+        local brace = line:find("{", 1, true)
+        local ok2, event2
+        if brace then ok2, event2 = pcall(hs.json.decode, line:sub(brace)) end
+        if ok2 and type(event2) == "table" then
+          local prefix = line:sub(1, brace - 1):gsub("%s+$", "")
+          if prefix ~= "" then
+            log.info("daemon runtime notice (benign, prefixed a JSON line)",
+              { message = prefix })
+          end
+          handleEvent(event2)
+        else
+          log.error("daemon emitted invalid json", { line = line })
+        end
       end
     end
   end
   return true
 end
 
+-- The CoreML/Espresso runtime (E5RT) prints a one-time C++ shape-inference
+-- exception to stderr the first time the Parakeet model is shaped. The
+-- daemon's warmup pass deliberately absorbs it so real takes stay clean; it
+-- is benign and lives below Swift's error handling, so it can't be caught in
+-- the daemon. Recognize it here instead of raising an error on every launch.
+local BENIGN_STDERR = {
+  "E5RT encountered an STL exception",
+  "PropagateInputTensorShapes",
+}
+
 local function onStderr(chunk)
-  if chunk and chunk ~= "" then
-    log.error("daemon stderr", { message = chunk:gsub("%s+$", "") })
+  if not chunk or chunk == "" then return end
+  local message = chunk:gsub("%s+$", "")
+  for _, marker in ipairs(BENIGN_STDERR) do
+    if message:find(marker, 1, true) then
+      log.info("daemon warmup notice (benign CoreML shape inference)",
+        { message = message })
+      return
+    end
   end
+  log.error("daemon stderr", { message = message })
 end
 
 local function onExit(_, code)
@@ -1164,7 +1018,7 @@ local function onExit(_, code)
         play(config.soundStop)
         pasteTranscript(lastPartial)
       else
-        hs.pasteboard.setContents(lastPartial)
+        setClipboardTranscript(lastPartial)
       end
     end
     hs.alert.show("Dictation daemon exited (code " .. tostring(code) ..
@@ -1187,6 +1041,9 @@ spawnDaemon = function()
   stdoutBuf = ""
   local args = { config.locale,
     "--idle", tostring(config.micIdleSeconds or 180),
+    "--stop-grace", tostring(config.stopGraceMs or 150),
+    "--parakeet", tostring(config.parakeet or "off"),
+    "--stream", tostring(config.stream or "off"),
     "--glossary", config.glossaryPath,
     "--corrections", config.correctionMemoryPath }
   if config.fastResults then table.insert(args, "--fast") end
@@ -1231,6 +1088,87 @@ end
 
 local function send(cmd)
   if task then task:setInput(cmd .. "\n") end
+end
+
+----------------------------------------------------------------
+-- GLOSSARY AUTO-LEARN — Wispr-style proper-noun pickup.
+--
+-- After each paste, unknown names/product words are counted; the second
+-- sighting graduates the word into the glossary, which both biases the
+-- recognizer (reload-context) and joins the LLM cleanup prompt.
+----------------------------------------------------------------
+local function glossaryLineCount()
+  local n = 0
+  local f = io.open(config.glossaryPath, "r")
+  if not f then return 0 end
+  for line in f:lines() do
+    if line:gsub("#.*$", ""):match("%S") then n = n + 1 end
+  end
+  f:close()
+  return n
+end
+
+learnProperNouns = function(text)
+  if not config.glossaryAutoLearn then return end
+  local ok, err = pcall(function()
+    local known = {}
+    for _, term in ipairs(core.contextTerms(
+        config.glossaryPath, config.correctionMemoryPath, 1000) or {}) do
+      for word in term:gmatch("[%w'%.%-]+") do known[word:lower()] = true end
+    end
+    local candidates = core.properNounCandidates(text, known)
+    if #candidates == 0 then return end
+
+    local counts = {}
+    local f = io.open(config.properNounCountsPath, "r")
+    if f then
+      for line in f:lines() do
+        local word, n = line:match("^(.-)\t(%d+)")
+        if word and word ~= "" then counts[word] = tonumber(n) end
+      end
+      f:close()
+    end
+
+    local learned = {}
+    for _, word in ipairs(candidates) do
+      local n = (counts[word] or 0) + 1
+      if n >= (config.glossaryAutoLearnThreshold or 2) then
+        counts[word] = nil
+        learned[#learned + 1] = word
+      else
+        counts[word] = n
+      end
+    end
+
+    if #learned > 0 then
+      if glossaryLineCount() + #learned > (config.glossaryAutoLearnMaxTerms or 90) then
+        log.warn("glossary auto-learn skipped; glossary near context cap", {
+          candidates = table.concat(learned, ", "),
+        })
+      else
+        local g = io.open(config.glossaryPath, "a")
+        if g then
+          for _, word in ipairs(learned) do g:write(word, "\n") end
+          g:close()
+          send("reload-context")
+          log.info("glossary auto-learned terms", {
+            terms = table.concat(learned, ", "),
+          })
+          hs.alert.show("Dictation learned: "
+            .. table.concat(learned, ", "), 1.0)
+        end
+      end
+    end
+
+    local w = io.open(config.properNounCountsPath, "w")
+    if w then
+      for word, n in pairs(counts) do w:write(word, "\t", n, "\n") end
+      w:close()
+    end
+  end)
+  if not ok then
+    log.warn("glossary auto-learn failed", { error = tostring(err) })
+  end
 end
 
 ----------------------------------------------------------------
@@ -1419,8 +1357,10 @@ handleEvent = function(event)
     local fields = transcriptLogFields(text)
     fields.finalizeMs = elapsedMs(finishAtMs)
     fields.takeMs = elapsedMs(beginAtMs)
+    fields.engine = event.engine
     lastFinalizeMs = fields.finalizeMs
     lastTakeMs = fields.takeMs
+    lastFinalEngine = event.engine or recognizerEngine
     log.info("daemon final", fields)
     if text ~= "" then
       deliverTranscript(text) -- owns the pill + stop sound from here
@@ -1503,6 +1443,9 @@ function M.begin()
   stopReason = nil
   pressTime = hs.timer.secondsSinceEpoch()
   savedClipboard = hs.pasteboard.getContents()
+  if config.autoRefine then
+    pcall(function() require("refine").prewarmConnection() end)
+  end
   state = "starting"
   bindEsc()
   log.info("sending start")
@@ -1529,7 +1472,7 @@ function M.finish()
   stopReason = "finish"
   -- Backup FIRST: whatever happens downstream, Cmd+V has the words.
   if config.clipboardBackup and lastPartial ~= "" then
-    hs.pasteboard.setContents(lastPartial)
+    setClipboardTranscript(lastPartial)
   end
   armWatchdog()
   showPill(lastPartial ~= "" and lastPartial or "Listening", false)
@@ -1696,8 +1639,6 @@ function M.start()
     cancelTimeout = config.cancelTimeout,
     punctuation = config.punctuation,
     voiceCommands = config.voiceCommands,
-    longDictationPolish = config.longDictationPolish,
-    joinChoppyFragments = config.joinChoppyFragments,
     micIdleSeconds = config.micIdleSeconds,
   })
 end
@@ -1740,9 +1681,11 @@ function M.status()
     pendingTakeId = pendingDelivery and pendingDelivery.id or nil,
     contextTermCount = contextTermCount,
     recognizerEngine = recognizerEngine,
+    finalEngine = lastFinalEngine,
     lastTotalLatencyMs = lastTotalLatencyMs,
     lastAILatencyMs = lastAILatencyMs,
-    aiModel = lastAIModel or "gpt-5.4-mini",
+    aiModel = lastAIModel,
+    aiProvider = lastAIProvider,
     lastAIReason = lastAIReason,
   }
 end
