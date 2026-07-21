@@ -24,12 +24,25 @@ check(core.profileForApp("Mail", "Auto") == "Message", "Mail profile")
 check(core.profileForApp("Messages", "Auto") == "Message", "Messages profile")
 check(core.profileForApp("iTerm2", "Auto") == "Prompt", "iTerm profile")
 check(core.profileForApp("Slack", "Literal") == "Literal", "override profile")
-check(select(1, core.shouldUseAI("one two three", "Literal")) == false, "literal AI bypass")
-check(not select(1, core.shouldUseAI("one two three four five six seven eight nine ten eleven twelve", "Message")), "message length bypass")
-check(not select(1, core.shouldUseAI("one two three", "Prompt")), "prompt bypass")
-check(select(1, core.shouldUseAI("Use the first option actually no use the second option", "Prompt")), "prompt backtracking trigger")
-check(select(1, core.shouldUseAI("Draft one let me rephrase draft two", "Message")), "message backtracking trigger")
-check(core.maxOutputTokens("one two") == 32, "token minimum")
+check(select(1, core.shouldUseAI("one two three four five", "Literal")) == false, "literal AI bypass")
+check(select(1, core.shouldUseAI("one two three four five six seven eight nine ten eleven twelve", "Message")), "ordinary message take polished")
+check(select(1, core.shouldUseAI("Use the first option or the second option", "Prompt")), "ordinary prompt take polished")
+check(not select(1, core.shouldUseAI("one two three", "Prompt")), "tiny take bypass")
+check(select(2, core.shouldUseAI("ok thanks", "Prompt")) == "too_short", "acknowledgement bypass")
+check(select(1, core.shouldUseAI("yes please do it now", "Prompt", { minWords = 5, minChars = 12 })), "min gates configurable")
+check(core.maxOutputTokens("one two") == 64, "token minimum")
+
+local nouns = core.properNounCandidates(
+  "Tell Daniel the EquipFlow demo moved. Ask Marcus on Tuesday about the API.",
+  { equipflow = true })
+check(table.concat(nouns, "|") == "Daniel|Marcus",
+  "proper noun candidates: " .. table.concat(nouns, "|"))
+local camel = core.properNounCandidates(
+  "GitHub's new integration with Amplifyd works. Amplifyd ships Monday.", {})
+check(table.concat(camel, "|") == "GitHub|Amplifyd",
+  "camel-case and possessive nouns: " .. table.concat(camel, "|"))
+check(#core.properNounCandidates("The meeting is at nine tomorrow. Fine by me.", {}) == 0,
+  "no proper nouns in plain text")
 
 local six = "Refine the prompt based on that."
 check(not select(1, core.validateAIOutput(six, string.rep("You are the cleanup engine. ", 22))), "prompt leak regression")
@@ -37,10 +50,10 @@ check(select(2, core.validateAIOutput("Use 42 items", "Use 43 items")) == "numer
 check(select(2, core.validateAIOutput("Open the page", "Open https://example.com")) == "url_introduced", "URL guard")
 check(select(2, core.validateAIOutput("hello", "")) == "empty", "empty guard")
 check(select(2, core.validateAIOutput("hello there", '{"transcript":"hello there"}')) == "json_wrapper", "JSON wrapper guard")
-check(select(2, core.validateAIOutput("a reasonably long input", "tiny")) == "length_ratio", "length guard")
+check(select(2, core.validateAIOutput("a reasonably long input", "tiny")) == "words_introduced", "rewrite guard")
 check(select(1, core.validateAIOutput("hello there", "Hello, there.")), "punctuation-only polish")
-check(select(2, core.validateAIOutput("we'll need to move", "we need to move")) == "words_changed", "modal fidelity guard")
-check(select(2, core.validateAIOutput("do not invent a URL", "do not prevent a URL")) == "words_changed", "semantic substitution guard")
+check(select(2, core.validateAIOutput("we'll need to move", "we need to move")) == "words_introduced", "modal fidelity guard")
+check(select(2, core.validateAIOutput("do not invent a URL", "do not prevent a URL")) == "words_introduced", "semantic substitution guard")
 check(select(1, core.validateAIOutput(
   "Use red actually no let me change that use blue",
   "Use blue.")), "explicit correction deletion")
@@ -49,7 +62,32 @@ check(select(2, core.validateAIOutput(
   "Use green.")) == "words_introduced", "explicit correction invention guard")
 check(select(2, core.validateAIOutput(
   "Use red actually no let me change that use blue",
-  "Blue.")) == "correction_tail_changed", "explicit correction tail guard")
+  "Blue.")) == "over_deleted", "explicit correction over-deletion guard")
+
+-- Wispr-style cleanup: deletions and punctuation pass, rewrites don't.
+check(select(1, core.validateAIOutput(
+  "Okay, um, I want to, uh, basically fix the thing",
+  "Okay, I want to fix the thing.")), "filler deletion accepted")
+check(select(1, core.validateAIOutput(
+  "I'm using it right now so you can see. The output. But it's still not great.",
+  "I'm using it right now so you can see the output, but it's still not great.")),
+  "pause-fragment join accepted")
+check(select(2, core.validateAIOutput(
+  "Should we create a new issue for the demo flag",
+  "Yes, creating a new issue for the demo flag sounds good")) == "words_introduced",
+  "answering guard")
+check(select(2, core.validateAIOutput(
+  "The deploy failed because the token expired and the retry loop never fired",
+  "The deploy failed")) == "over_deleted", "over-deletion guard")
+check(select(1, core.validateAIOutput(
+  "delivery windows between 730 and nine tomorrow morning so plan the trucks accordingly please",
+  "Delivery windows between 7:30 and nine tomorrow morning, so plan the trucks accordingly, please.")),
+  "digit-formatting tolerated")
+check(select(1, core.validateAIOutput(
+  "send it Tuesday no wait Wednesday works better",
+  "Send it Wednesday works better.")), "no-wait backtrack accepted")
+check(core.hasExplicitCorrection("use the red one what I mean is the blue one"),
+  "mixed-case cue detected")
 
 local queue = core.newDeliveryQueue()
 local first = queue:start("first", {pid=1})

@@ -1,4 +1,6 @@
 # Never commit secrets or machine-local noise.
+.build/
+dictation_proper_nouns.tsv
 *.bak
 *.backup-*
 *.prelink-backup-*
