@@ -1,11 +1,16 @@
-# Never commit secrets or machine-local noise.
+# --- Build output & machine-local noise ---
 .build/
+.swiftpm/
 dictation_proper_nouns.tsv
 *.bak
 *.backup-*
 *.prelink-backup-*
 .DS_Store
-# Guard against accidental secret material landing here.
+
+# --- Installer backups ---
+.loadout-backup-*/
+
+# --- Never commit secrets ---
 *.pem
 *.key
 *_token

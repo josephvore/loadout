@@ -1,10 +1,24 @@
-local logging = require("logging")
+-- Loadout — canonical Hammerspoon loader.
+--
+-- Loads whichever Loadout apps are installed in ~/.hammerspoon. Every app is
+-- loaded inside a pcall so that one app failing to load (or being absent) can
+-- never stop the others. Apps register their own hotkeys when they start.
+--
+-- Load order matters:
+--   1. palette.applyOverrides() — apply persisted hotkey overrides to each
+--      module's config BEFORE any module binds.
+--   2. quickshots — owns the shared Caps (F18) event tap that hone and palette
+--      bind into, so it must start before them.
+--   3. hone — text refinement; also Murmur's cleanup engine, so before murmur.
+--   4. murmur, relay — independent apps.
+--   5. palette.start() — the Caps+K menu, last, so it sees every module.
+
+local logging = require("litelog")
 local initLog = logging.new("init")
 
 local function loadApp(name, fn, failAlert)
   local appLog = logging.new(name)
   initLog.info("loading app", { app = name })
-  appLog.info("loading")
   local ok, err = xpcall(fn, debug.traceback)
   if ok then
     initLog.info("loaded app", { app = name })
@@ -19,38 +33,24 @@ end
 
 initLog.info("reload started")
 
--- shortcuts: apply persisted hotkey overrides to each module's config BEFORE
--- any module starts and binds. The Caps+K menu itself starts at the bottom.
-loadApp("shortcuts", function() require("shortcuts").applyOverrides() end)
+-- Apply persisted hotkey overrides before anything binds.
+loadApp("palette", function() require("palette").applyOverrides() end)
 
--- BEGIN QuickShots loader (managed by quickshots/install.sh)
--- quickshots.lua is symlinked to /Volumes/Code/quickshots (an internal fixed
--- volume). pcall-wrapped so that if that volume is ever unmounted, the dangling
--- symlink degrades to a visible alert instead of aborting the whole config.
+-- QuickShots owns the shared Caps (F18) tap; start it first. Absent = fine.
 loadApp("quickshots", function() require("quickshots").start() end,
-  "QuickShots failed to load (is /Volumes/Code mounted?)")
--- END QuickShots loader
+  "QuickShots failed to load")
 
--- flows: quick-launch / voice flows (Obsidian capture, voice Claude Code,
--- Claude Chrome dogfood, Chrome search, start Wispr). pcall so a load error
--- here can never prevent QuickShots from starting.
-loadApp("flows", function() require("flows").start() end)
+-- Hone (AI text refine) — also Murmur's cleanup engine, so start before Murmur.
+loadApp("hone", function() require("hone").start() end)
 
--- refine: OpenAI text refinement — Caps+C refines the clipboard and pastes,
--- Caps+S refines the current selection in place. Binds into QuickShots'
--- Caps tap via registerCapsAction. pcall for the same isolation as above.
-loadApp("refine", function() require("refine").start() end,
-  "refine failed to load")
+-- Murmur (on-device dictation).
+loadApp("murmur", function() require("murmur").start() end)
 
--- dictation: on-device dictation, one key — hold Right⌘ and speak, release
--- to paste; or tap Right⌘ for hands-free until you tap it again (Esc =
--- cancel). Runs ~/bin/hs-dictate (Apple SpeechAnalyzer); no cloud.
-loadApp("dictation", function() require("dictation").start() end,
-  "dictation failed to load")
+-- Relay (quick-launch / voice flows).
+loadApp("relay", function() require("relay").start() end)
 
--- shortcuts: Caps+K — searchable menu of every Hammerspoon shortcut with
--- descriptions, source files, and run / rebind / reset actions.
-loadApp("shortcuts", function() require("shortcuts").start() end,
-  "shortcuts menu failed to load")
+-- Palette (Caps+K searchable shortcut menu) — last, so it sees every module.
+loadApp("palette", function() require("palette").start() end,
+  "Palette menu failed to load")
 
 initLog.info("reload finished")

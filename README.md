@@ -1,36 +1,66 @@
-# dotfiles
+# Loadout
 
-Version-controlled macOS environment configs, symlinked into place.
+A free, open-source kit of macOS productivity utilities — each one a focused
+replacement for a paid app. Built on [Hammerspoon](https://www.hammerspoon.org),
+driven from the keyboard, and installable in one pass.
 
-## What's tracked
+Each app stands on its own (its own folder, README, and installer). Install the
+whole loadout, or just the pieces you want.
 
-| Repo file | Symlinked to | Purpose |
+## The apps
+
+| App | What it does | Replaces |
 |---|---|---|
-| `.zshrc` | `~/.zshrc` | Interactive shell (prompt, fzf, aliases, plugins) |
-| `.zprofile` | `~/.zprofile` | Login shell (brew, pyenv, ulimit) |
-| `.zshenv` | `~/.zshenv` | All shells (cargo, bun PATH) |
-| `hammerspoon/init.lua` | `~/.hammerspoon/init.lua` | Loads QuickShots + flows |
-| `raycast-scripts/kill-dev-servers.sh` | `~/.config/raycast/scripts/kill-dev-servers.sh` | Reap stale Codex/Claude MCP + dev-server subprocesses |
+| [QuickShots](https://github.com/josephvore/quickshots) | Drag-area screenshots that auto-group and smart-paste (as images, files, or paths) | CleanShot X · Shottr · Xnapper |
+| [Murmur](apps/murmur) | On-device, push-to-talk dictation with an LLM cleanup pass | Wispr Flow · Superwhisper |
+| [Hone](apps/hone) | Rewrite the clipboard or a selection for clarity, in place, one keypress | Raycast AI · Grammarly rewrite |
+| [Relay](apps/relay) | Quick-launch / voice flows into your other tools | Alfred · Raycast workflows |
+| [Palette](apps/palette) | Searchable Caps+K menu of every shortcut, with rebind | CheatSheet · KeyCue |
+| [Reap](apps/reap) | Reap leaked MCP + dev-server processes (safe dry-run default) | — |
 
-## Not tracked here (own repos / volumes)
+QuickShots lives in [its own repo](https://github.com/josephvore/quickshots); the
+bootstrap script clones and wires it in for you.
 
-- **QuickShots** — its own repo at `github.com/josephvore/quickshots`, symlinked
-  `~/.hammerspoon/quickshots.lua -> /Volumes/Code/quickshots/quickshots.lua`.
-(All Hammerspoon configs except QuickShots are now tracked here.)
-
-## Setup on a new machine
+## Quick start
 
 ```sh
-git clone <this-repo> ~/dotfiles
-~/dotfiles/install.sh          # idempotent; backs up anything it replaces
+git clone https://github.com/josephvore/loadout.git ~/loadout
+cd ~/loadout
+./bootstrap.sh                 # installs the Hammerspoon apps + QuickShots
+# ./bootstrap.sh --with-shell  # also symlink the zsh config (optional)
 ```
 
-`install.sh` is safe to re-run; it skips already-correct links and backs up any
-real file it would overwrite to `~/.dotfiles-backup-<timestamp>/`.
+`bootstrap.sh` is idempotent and non-destructive — it backs up anything it would
+replace and **never installs system software for you**. Make sure the
+[prerequisites](PREREQUISITES.md) are in place first.
 
-## Hotkey reference (current system)
+Then finish the three steps only you can do — API keys, the Caps Lock remap, and
+macOS permissions. The bootstrap prints them, and [SETUP.md](SETUP.md) is the full
+checklist (it also doubles as a runbook you can hand to an AI coding agent).
 
-- **Caps+D** — dev-capture → new Codex session (QuickShots)
-- **Caps+A / V / N / F / Z / O** — QuickShots capture / paste / burst / open
-- **⌃⌥⌘N** — Obsidian quick capture · **⌃⌥⌘C** — voice Claude Code
-- **⌃⌥⌘D** — Claude Chrome side panel · **⌃⌥⌘G** — Chrome search · **⌃⌥⌘W** — start Wispr
+## Why Caps Lock
+
+Most of these tools bind to **Caps Lock as a modifier** (Caps+A to capture, Caps+K
+for the menu, and so on). QuickShots remaps Caps Lock to a spare key (F18) and owns
+a shared event tap the other apps hook into. Apps that don't use Caps (Murmur on
+Right-Command, Relay on Ctrl+Alt+Cmd) bind their own collision-free hotkeys. See
+each app's README for its bindings.
+
+## Repo layout
+
+```
+loadout/
+  bootstrap.sh          # install the whole suite
+  PREREQUISITES.md      # what to install yourself first
+  SETUP.md              # full setup checklist / AI-agent runbook
+  Brewfile              # optional: `brew bundle` to install CLI tools
+  apps/<name>/          # each app: source, README, LICENSE, install.sh
+  lib/litelog/          # shared logging micro-library
+  lib/install-common.sh # shared installer helpers
+  hammerspoon/init.lua  # canonical loader (loads whichever apps are installed)
+  shell/                # optional zsh config
+```
+
+## License
+
+MIT — see [LICENSE](LICENSE). Each app carries its own copy.

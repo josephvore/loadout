@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Lua tests + shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Lua
+        run: sudo apt-get update && sudo apt-get install -y lua5.4
+
+      - name: Run Lua tests
+        run: lua5.4 apps/murmur/tests/test_murmur.lua
+
+      - name: ShellCheck
+        run: |
+          shellcheck --version
+          shellcheck -x \
+            bootstrap.sh \
+            shell/install.sh \
+            lib/install-common.sh \
+            apps/*/install.sh \
+            apps/hone/setup-keys.sh \
+            apps/reap/reap.sh
