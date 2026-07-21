@@ -12,14 +12,15 @@ whole loadout, or just the pieces you want.
 | App | What it does | Replaces |
 |---|---|---|
 | [QuickShots](https://github.com/josephvore/quickshots) | Drag-area screenshots that auto-group and smart-paste (as images, files, or paths) | CleanShot X · Shottr · Xnapper |
-| [Murmur](apps/murmur) | On-device, push-to-talk dictation with an LLM cleanup pass | Wispr Flow · Superwhisper |
+| [Murmur](https://github.com/josephvore/murmur) | On-device, push-to-talk dictation with an LLM cleanup pass | Wispr Flow · Superwhisper |
 | [Hone](apps/hone) | Rewrite the clipboard or a selection for clarity, in place, one keypress | Raycast AI · Grammarly rewrite |
 | [Relay](apps/relay) | Quick-launch / voice flows into your other tools | Alfred · Raycast workflows |
 | [Palette](apps/palette) | Searchable Caps+K menu of every shortcut, with rebind | CheatSheet · KeyCue |
 | [Reap](apps/reap) | Reap leaked MCP + dev-server processes (safe dry-run default) | — |
 
-QuickShots lives in [its own repo](https://github.com/josephvore/quickshots); the
-bootstrap script clones and wires it in for you.
+Two apps also have standalone repos for discovery: [QuickShots](https://github.com/josephvore/quickshots)
+(its own source of truth — the bootstrap script clones and wires it in for you) and
+[Murmur](https://github.com/josephvore/murmur) (mirrored from `apps/murmur`, kept in sync from here).
 
 ## Quick start
 
