@@ -120,7 +120,7 @@ local config = {
 
   -- Wispr-style cleanup: every ordinary take goes through the LLM polish
   -- (fillers, false starts, backtracking, pause-punctuation) via the fastest
-  -- provider with a Keychain key — see providers in refine.lua. On timeout
+  -- provider with a Keychain key — see providers in hone.lua. On timeout
   -- or failure the locally cleaned transcript pastes instead, so words are
   -- never lost, just less polished.
   autoRefine = true,
@@ -822,7 +822,7 @@ local function deliverTranscript(text)
     log.info("local cleanup kept transcript", transcriptLogFields(text))
   end
   if handleDictationCommand(text) then return end
-  local refine = nil
+  local hone = nil
   local shouldPolish, skipReason = core.shouldUseAI(text, activeProfile, {
     minWords = config.autoRefineMinWords,
     minChars = config.autoRefineMinChars,
@@ -832,14 +832,14 @@ local function deliverTranscript(text)
     shouldPolish, skipReason = false, "snippet"
   end
   if shouldPolish then
-    local ok, mod = pcall(require, "refine")
+    local ok, mod = pcall(require, "hone")
     if ok and type(mod) == "table" and type(mod.refineText) == "function" then
-      refine = mod
+      hone = mod
     else
       skipReason = ok and "refine_unavailable" or tostring(mod)
     end
   end
-  if not refine then
+  if not hone then
     log.info("pasting without polish", {
       autoRefine = config.autoRefine,
       reason = skipReason,
@@ -908,7 +908,7 @@ local function deliverTranscript(text)
     })
     finishWith(text, "timeout")
   end)
-  refine.refineText(text,
+  hone.refineText(text,
     function(result, meta)
       local accepted, rejectReason = core.validateAIOutput(text, result)
       if not accepted then
