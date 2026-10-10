@@ -71,7 +71,8 @@ System Settings → Privacy & Security → Accessibility, then reload Hammerspoo
 
 ## Configuration
 
-Edit the `config` table at the top of `hone.lua`:
+Set `require("hone").config` fields in your private
+`~/.hammerspoon/loadout.local.lua` (see [local configuration](../../SETUP.md#local-configuration)):
 
 - **`vocabulary`** — a list of names, brands, and jargon the model is told to
   correct toward (for example `"post gres"` → `"Postgres"`).

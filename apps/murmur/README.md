@@ -89,6 +89,12 @@ macOS will prompt the first time things run. Grant Hammerspoon:
 - **Accessibility** — to paste and to read the surrounding context.
 - **Microphone** — to capture audio.
 
+## Configuration
+
+Murmur uses your system microphone. Set device preferences and other overrides
+in `~/.hammerspoon/loadout.local.lua`, not the linked module; see
+[local configuration](../../SETUP.md#local-configuration).
+
 ## Data files
 
 Your personal dictation data lives in `~/.hammerspoon/murmur/`:

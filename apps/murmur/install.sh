@@ -4,6 +4,7 @@
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/install-common.sh
 . "${DIR}/../../lib/install-common.sh"
 
 # Shared loader + logging.

@@ -33,6 +33,13 @@ end
 
 initLog.info("reload started")
 
+-- Personal paths, device choices, and model settings live outside the repo.
+local localConfig = hs.configdir .. "/loadout.local.lua"
+if hs.fs.attributes(localConfig, "mode") == "file" then
+  loadApp("local-config", function() dofile(localConfig) end,
+    "Loadout local configuration failed to load")
+end
+
 -- Apply persisted hotkey overrides before anything binds.
 loadApp("palette", function() require("palette").applyOverrides() end)
 

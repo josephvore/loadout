@@ -11,7 +11,7 @@
 -- API keys are read from the macOS Keychain (one service name per provider,
 -- see config.providers) so no secret ever lives in this file / the repo.
 -- Run apps/hone/setup-keys.sh to store them, or set one manually:
---   security add-generic-password -a "$USER" -s openai-refine -w 'sk-...' -U
+--   security add-generic-password -a "$USER" -s openai-refine -U
 
 local M = {}
 local log = require("litelog").new("hone")
@@ -22,7 +22,7 @@ local log = require("litelog").new("hone")
 local config = {
   keychainService = "openai-refine",
 
-  -- This project has access to the GPT-5 family only.
+  -- Default models; override locally to match your provider access.
   --   model           — manual Caps+C / Caps+S. gpt-5.4 edits best (cuts
   --                     filler, not just grammar) at ~1.4-2.4s.
   --   autoRefineModel — default dictation cleanup on the OpenAI provider.
@@ -36,8 +36,8 @@ local config = {
   -- Dictation cleanup providers, fastest first. OpenAI works today; adding a
   -- Groq or Cerebras key drops cleanup latency from ~1.3-2s to ~0.3-0.7s
   -- (their LPU/wafer inference serves Llama-class models at 1000+ tok/s):
-  --   security add-generic-password -a "$USER" -s groq-api -w 'gsk_...' -U
-  --   security add-generic-password -a "$USER" -s cerebras-api -w 'csk-...' -U
+  --   security add-generic-password -a "$USER" -s groq-api -U
+  --   security add-generic-password -a "$USER" -s cerebras-api -U
   -- The first provider whose key exists in the Keychain wins; no key = next.
   -- Model names rotate — check console.groq.com/docs/models and
   -- inference-docs.cerebras.ai if a provider starts erroring.

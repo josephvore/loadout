@@ -75,3 +75,28 @@ your say-so — those are in "Human-only."
 
 If an app doesn't load, open the Hammerspoon Console or check
 `~/.hammerspoon/logs/init.log` — each app logs whether it loaded.
+
+## Local configuration
+
+Keep your own paths, account settings, and device choices outside tracked files.
+Create `~/.hammerspoon/loadout.local.lua`; the loader runs it before apps start
+and before Palette applies saved hotkey bindings. For example:
+
+```lua
+local relay = require("relay").config
+relay.quickCaptureFile = os.getenv("HOME") .. "/Documents/Notes/Inbox.md"
+
+local murmur = require("murmur").config
+murmur.preferredInputDevices = {} -- system default; or list your device names
+murmur.contentHint = "default" -- "far-field" for a distant microphone
+
+-- Set require("hone").config.model to a model available to your account.
+```
+
+Only configure apps you installed. API keys belong in the macOS Keychain via
+`apps/hone/setup-keys.sh`, not in Lua files. Edit vocabulary and snippets in
+`~/.hammerspoon/murmur/`; the repository's data files are generic examples.
+
+For shell settings, use `~/.zshrc.local`, `~/.zprofile.local`, and a private
+`~/.zshenv` (see [shell setup](shell/README.md)). These local filenames are
+ignored by Git even if accidentally placed inside a checkout.

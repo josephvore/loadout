@@ -111,46 +111,13 @@ local terms = core.contextTerms(glossary, corrections, 100)
 check(table.concat(terms, "|") == "Wispr Flow|GPT-5.6|Newest|Older", "context priority")
 os.remove(glossary); os.remove(corrections)
 
-local baseline = core.cleanupTranscript(
-  "I was testing Hammerspoon Codex get have the OpenAI responses API. "
-    .. "Turns like Postgres GPT 5.4 mini instant 360 link to C and court audio "
-    .. "should remain spoken. Do not change a model lumber or substitute it.",
-  {
-    glossaryPath = root .. "/data/dictation_glossary.txt",
-    correctionsPath = root .. "/data/dictation_corrections.tsv",
-    voiceCommands = true,
-    lightCleanup = true,
-  })
-for _, required in ipairs({
-  "GitHub and the OpenAI", "Terms like Postgres", "GPT-5.4-mini",
-  "Insta360 Link 2C", "CoreAudio", "model number or substitute",
-}) do
-  check(baseline:find(required, 1, true) ~= nil,
-    "baseline correction missing " .. required .. ": " .. baseline)
-end
-
-local planPhrase = core.cleanupTranscript(
-  "OK create a conference of plan to fix",
-  {
-    glossaryPath = root .. "/data/dictation_glossary.txt",
-    correctionsPath = root .. "/data/dictation_corrections.tsv",
-    lightCleanup = true,
-  })
-check(planPhrase == "OK create a comprehensive plan to fix",
-  "comprehensive plan correction")
-
-local remainingBaseline = core.cleanupTranscript(
-  "without adding a necessary punctuation. Terms like GPD 5.4 mini, "
-    .. "Insta 360 link to C, and CoreAudio",
-  {
-    glossaryPath = root .. "/data/dictation_glossary.txt",
-    correctionsPath = root .. "/data/dictation_corrections.tsv",
-    lightCleanup = true,
-  })
-check(remainingBaseline ==
-  "without adding unnecessary punctuation. Terms like GPT-5.4-mini, "
-    .. "Insta360 Link 2C, and CoreAudio",
-  "remaining recorded variants: " .. remainingBaseline)
+local baseline = core.cleanupTranscript("Use hammer spoon with post gres and git hub", {
+  glossaryPath = root .. "/data/dictation_glossary.txt",
+  correctionsPath = root .. "/data/dictation_corrections.tsv",
+  lightCleanup = true,
+})
+check(baseline == "Use Hammerspoon with Postgres and GitHub",
+  "example data corrections: " .. baseline)
 
 local filler = core.cleanupTranscript("Um keep this uh exact", {
   voiceCommands = true, lightCleanup = true,

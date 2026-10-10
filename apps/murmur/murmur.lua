@@ -86,13 +86,10 @@ local config = {
   -- watched via a flagsChanged event tap, so ordinary keys won't work here.
   trigger = { {}, "rightcmd" },
 
-  -- Bluetooth headset microphones can change CoreAudio format/route under
-  -- AVAudioEngine and have been the source of installTap crashes. Prefer
-  -- stable dedicated mics in this order; set to {} to use system default.
-  preferredInputDevices = {
-    "Insta360 Link 2C",
-    "MacBook Pro Microphone",
-  },
+  -- Use the system microphone unless device names are configured locally.
+  preferredInputDevices = {},
+  -- Set to "far-field" locally for a distant microphone.
+  contentHint = "default",
   preferredInputDevice = nil, -- legacy single-name override
 
   -- Releasing the trigger within this many seconds of pressing = a "tap" →
@@ -1054,10 +1051,8 @@ spawnDaemon = function()
   if config.punctuation then
     table.insert(args, "--punctuation")
   end
-  local input = hs.audiodevice.defaultInputDevice()
   table.insert(args, "--content-hint")
-  table.insert(args, input and input:name() == "Insta360 Link 2C"
-    and "far-field" or "default")
+  table.insert(args, config.contentHint == "far-field" and "far-field" or "default")
   log.info("spawning daemon", {
     binary = config.binary,
     locale = config.locale,
