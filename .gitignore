@@ -17,3 +17,15 @@ dictation_proper_nouns.tsv
 *_secret
 .env
 .env.*
+
+# Private shell environments and local configuration (at any depth).
+.zshenv
+.zshrc.local
+.zprofile.local
+loadout.local.lua
+.envrc
+
+# Runtime logs and recordings.
+logs/
+*.log
+*.wav

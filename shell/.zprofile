@@ -17,3 +17,8 @@ export PATH="$PYENV_ROOT/bin:$PATH"
 command -v pyenv &>/dev/null && eval "$(pyenv init --path)"
 
 ulimit -S -n 65536 2>/dev/null || true
+
+# Machine-specific settings stay outside tracked configuration.
+if [[ -r "$HOME/.zprofile.local" ]]; then
+  source "$HOME/.zprofile.local"
+fi

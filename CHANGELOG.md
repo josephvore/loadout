@@ -20,6 +20,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   shellcheck).
 
 ### Changed
+- Shell environment files are private copies, never tracked symlink targets;
+  existing environments are preserved when installing or reinstalling.
+- Machine-specific shell and Hammerspoon settings have local override files.
+- Murmur uses the system microphone and ships generic vocabulary examples.
 - Renamed the shared logger to **litelog**; the canonical `hammerspoon/init.lua`
   now `pcall`-loads whichever apps are installed and owns loading (installers no
   longer append their own loader block).

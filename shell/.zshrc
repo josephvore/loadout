@@ -1,6 +1,14 @@
 # ----- Performance: Cached Homebrew prefix -----
 # Cache this to avoid running `brew --prefix` on every shell startup (~40ms savings)
-export BREW_PREFIX="${BREW_PREFIX:-/opt/homebrew}"
+if [[ -z "$BREW_PREFIX" ]]; then
+  if [[ -n "$HOMEBREW_PREFIX" ]]; then
+    export BREW_PREFIX="$HOMEBREW_PREFIX"
+  elif [[ -x /opt/homebrew/bin/brew ]]; then
+    export BREW_PREFIX=/opt/homebrew
+  else
+    export BREW_PREFIX=/usr/local
+  fi
+fi
 
 # ----- pyenv (before Oh My Zsh, lazy-loaded for speed) -----
 export PYENV_ROOT="$HOME/.pyenv"
@@ -10,15 +18,17 @@ typeset -U path PATH fpath  # Prevent duplicate PATH/fpath entries
 export PATH="$HOME/bin:$HOME/.local/bin:$HOME/.bun/bin:$PYENV_ROOT/shims:$PYENV_ROOT/bin:$BREW_PREFIX/bin:/usr/local/bin:$HOME/go/bin:$PATH"
 
 # Lazy-load pyenv (~100ms savings)
-pyenv() {
-  unset -f pyenv python python3 pip pip3
-  eval "$(command pyenv init - zsh)"
-  pyenv "$@"
-}
-python()  { unset -f python;  eval "$(command pyenv init - zsh)"; python "$@"; }
-python3() { unset -f python3; eval "$(command pyenv init - zsh)"; python3 "$@"; }
-pip()     { unset -f pip;     eval "$(command pyenv init - zsh)"; pip "$@"; }
-pip3()    { unset -f pip3;    eval "$(command pyenv init - zsh)"; pip3 "$@"; }
+if command -v pyenv &>/dev/null; then
+  pyenv() {
+    unset -f pyenv python python3 pip pip3
+    eval "$(command pyenv init - zsh)"
+    pyenv "$@"
+  }
+  python()  { unset -f python;  eval "$(command pyenv init - zsh)"; python "$@"; }
+  python3() { unset -f python3; eval "$(command pyenv init - zsh)"; python3 "$@"; }
+  pip()     { unset -f pip;     eval "$(command pyenv init - zsh)"; pip "$@"; }
+  pip3()    { unset -f pip3;    eval "$(command pyenv init - zsh)"; pip3 "$@"; }
+fi
 
 # ----- Oh My Zsh -----
 export ZSH="$HOME/.oh-my-zsh"
@@ -75,7 +85,6 @@ setopt INC_APPEND_HISTORY
 setopt autocd
 
 # ----- Aliases -----
-alias cdc='cd ~/code'
 alias myip="curl -s https://ipv4.icanhazip.com/"
 alias zshconfig="$EDITOR ~/.zshrc"
 alias ohmyzsh="$EDITOR ~/.oh-my-zsh"
@@ -87,10 +96,12 @@ alias gs='git status'
 alias gp='git pull'
 
 # eza (modern ls replacement with icons)
-alias ls='eza --icons --group-directories-first'
-alias ll='eza -la --icons --group-directories-first --git'
-alias lt='eza --tree --level=2 --icons'
-alias la='eza -a --icons --group-directories-first'
+if command -v eza &>/dev/null; then
+  alias ls='eza --icons --group-directories-first'
+  alias ll='eza -la --icons --group-directories-first --git'
+  alias lt='eza --tree --level=2 --icons'
+  alias la='eza -a --icons --group-directories-first'
+fi
 
 # ----- fzf (fuzzy finder) -----
 # Use fd instead of find (faster, respects .gitignore)
@@ -138,9 +149,6 @@ if [[ -o interactive && -t 0 && -t 1 ]] && command -v fzf &>/dev/null; then
   source <(fzf --zsh)
 fi
 
-# ----- Certificates -----
-[[ -r "$HOME/.certs/cacert.pem" ]] && export SSL_CERT_FILE="$HOME/.certs/cacert.pem"
-
 # ----- zoxide -----
 command -v zoxide &>/dev/null && eval "$(zoxide init zsh)"
 
@@ -183,14 +191,16 @@ export ENABLE_TOOL_SEARCH=auto:5
   source "$BREW_PREFIX/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh"
 
 # Syntax highlighting colors (Material Design)
-ZSH_HIGHLIGHT_STYLES[command]='fg=#c3e88d'
-ZSH_HIGHLIGHT_STYLES[alias]='fg=#c3e88d'
-ZSH_HIGHLIGHT_STYLES[builtin]='fg=#82aaff'
-ZSH_HIGHLIGHT_STYLES[function]='fg=#82aaff'
-ZSH_HIGHLIGHT_STYLES[path]='fg=#89ddff,underline'
-ZSH_HIGHLIGHT_STYLES[single-quoted-argument]='fg=#ffcb6b'
-ZSH_HIGHLIGHT_STYLES[double-quoted-argument]='fg=#ffcb6b'
-ZSH_HIGHLIGHT_STYLES[commandseparator]='fg=#c792ea'
+if (( ${+ZSH_HIGHLIGHT_STYLES} )); then
+  ZSH_HIGHLIGHT_STYLES[command]='fg=#c3e88d'
+  ZSH_HIGHLIGHT_STYLES[alias]='fg=#c3e88d'
+  ZSH_HIGHLIGHT_STYLES[builtin]='fg=#82aaff'
+  ZSH_HIGHLIGHT_STYLES[function]='fg=#82aaff'
+  ZSH_HIGHLIGHT_STYLES[path]='fg=#89ddff,underline'
+  ZSH_HIGHLIGHT_STYLES[single-quoted-argument]='fg=#ffcb6b'
+  ZSH_HIGHLIGHT_STYLES[double-quoted-argument]='fg=#ffcb6b'
+  ZSH_HIGHLIGHT_STYLES[commandseparator]='fg=#c792ea'
+fi
 
 # Claude Code. Append --dangerously-skip-permissions yourself if you want to
 # skip per-action approval (convenient, but removes a safety gate).
@@ -204,4 +214,9 @@ if command -v brew &>/dev/null; then
   _libpq="$(brew --prefix libpq 2>/dev/null)"
   [[ -n "$_libpq" && -d "$_libpq/bin" ]] && export PATH="$_libpq/bin:$PATH"
   unset _libpq
+fi
+
+# Machine-specific settings stay outside tracked configuration.
+if [[ -r "$HOME/.zshrc.local" ]]; then
+  source "$HOME/.zshrc.local"
 fi

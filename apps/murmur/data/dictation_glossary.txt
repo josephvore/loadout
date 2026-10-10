@@ -1,24 +1,6 @@
-# Example dictation glossary — replace these with your own terms.
-# Format:
-#   Canonical Spelling = misheard phrase, alternate phrase
-# Lines without "=" are treated as exact canonical terms.
-
-Wispr Flow = Whisper Flow, Whisperflow, Wisper Flow, Whisper Flo
-Right Command = right command, right cmd, right command button
-Hammerspoon = hammer spoon, Hammer Spoon
-OpenAI = open ai, open A I
-ChatGPT = chat g p t, chat gpt
-Codex = code x
-Claude = clawed
-Postgres = post gres, postgres
-Kubernetes = cube are netes, kubernetes
-MLX = M L X
-SpeechAnalyzer = speech analyzer
-Apple SpeechAnalyzer = Apple speech analyzer
-GitHub = git hub, get hub, get have
-GPT-5.4-mini = GPT 5.4 mini, GPD 5.4 mini, GPT five point four mini
-Insta360 Link 2C = Insta 360 Link 2C, Insta 360 link to C, instant 360 link to C, instant 360 link to see
-CoreAudio = core audio, court audio
-Groq = grock, grok, gronk
-Cerebras = cerebrus, cerebros, cerebrass, sarah bruce
-LinkedIn
+# Example glossary: Canonical Spelling = misheard phrase, alternate phrase
+# Edit your installed copy in ~/.hammerspoon/murmur/, not this template.
+Hammerspoon = hammer spoon
+OpenAI = open ai
+Postgres = post gres
+GitHub = git hub

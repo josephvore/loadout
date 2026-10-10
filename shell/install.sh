@@ -8,11 +8,19 @@
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/install-common.sh
 . "${DIR}/../lib/install-common.sh"
 
 ld_link "${DIR}/.zshrc"    "${HOME}/.zshrc"
 ld_link "${DIR}/.zprofile" "${HOME}/.zprofile"
-ld_link "${DIR}/.zshenv"   "${HOME}/.zshenv"
+# Environment files may hold credentials. Never link them into the repository
+# or replace an existing environment (including a symlink).
+if [ -e "${HOME}/.zshenv" ] || [ -L "${HOME}/.zshenv" ]; then
+  echo "keep (private environment): ${HOME}/.zshenv"
+else
+  (umask 077; cp "${DIR}/.zshenv.example" "${HOME}/.zshenv")
+  echo "created private environment: ${HOME}/.zshenv"
+fi
 
 echo
 echo "Open a new terminal (or 'source ~/.zshrc') to load the new shell config."
