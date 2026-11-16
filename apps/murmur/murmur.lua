@@ -3099,7 +3099,7 @@ function M.selfEval(date)
 end
 
 function M.start()
-  -- ✦ Settings window overlay (loadout-settings) wins over file defaults.
+  -- Saved settings (Caps+K → Settings, via settings_overlay) win over file defaults.
   pcall(function() require("settings_overlay").apply("murmur", config) end)
   -- Caps+M through QuickShots' shared Caps tap is the trigger. If that tap
   -- isn't available and no modifier trigger is configured, fall back to

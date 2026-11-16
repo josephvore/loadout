@@ -756,7 +756,7 @@ end
 -- start() — bind into the QuickShots caps tap, or fall back.
 ----------------------------------------------------------------
 function M.start()
-  -- ✦ Settings window overlay (loadout-settings) wins over file defaults.
+  -- Saved settings (Caps+K → Settings, via settings_overlay) win over file defaults.
   pcall(function() require("settings_overlay").apply("hone", config) end)
   local ok, qs = pcall(require, "quickshots")
   if ok and type(qs) == "table" and type(qs.registerCapsAction) == "function" then

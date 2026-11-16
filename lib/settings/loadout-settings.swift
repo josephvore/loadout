@@ -1,7 +1,7 @@
 // loadout-settings — one native settings window for every Loadout app,
 // driven by per-app schemas in <repo>/settings/<app>.schema.json.
 // Backends: "json" writes a settings overlay (merged by settings_overlay.lua
-// at app start) — "shell" rewrites KEY=VALUE lines in a conf file (snag).
+// at app start) — "shell" rewrites KEY=VALUE lines in a conf file.
 //
 //   loadout-settings <app>                     open the settings window
 //   loadout-settings <app> --dump              print resolved values
@@ -119,8 +119,11 @@ func writeValues(_ schema: Schema, _ vals: [String: String]) throws {
         withIntermediateDirectories: true)
     if schema.format == "json" {
         var obj: [String: Any] = [:]
+        // Store only values that differ from the schema default, so untouched
+        // fields keep following the app's own config (and loadout.local.lua).
         for f in schema.fields {
             let s = vals[f.key] ?? f.def
+            if s == f.def { continue }
             switch f.type {
             case "bool": obj[f.key] = (s == "true")
             case "int":  obj[f.key] = Int(s) ?? 0

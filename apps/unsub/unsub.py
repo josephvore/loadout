@@ -631,10 +631,12 @@ def main():
     # 3. Web page (header link, else body link)
     url, label = (https, "web") if https else (find_body_link(msg), "body link")
     if url:
+        if not safe_to_fetch(url):
+            if dry:
+                finish(True, sender, label, f"DRY RUN: open {host(url)} in the browser ({label})")
+            finish(False, sender, label, f"Not fetching {host(url)} automatically. Opening the page", url)
         if dry:
             finish(True, sender, label, f"DRY RUN: open and complete {host(url)} ({label})")
-        if not safe_to_fetch(url):
-            finish(False, sender, label, f"Not fetching {host(url)} automatically. Opening the page", url)
         web_unsubscribe(url, sender, user_addr, label, use_ai)
 
     finish(False, sender, "none", f"No unsubscribe option found for {sender}")
