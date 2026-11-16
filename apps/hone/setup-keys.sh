@@ -25,8 +25,9 @@ for entry in "${providers[@]}"; do
   read -r answer
   case "$answer" in
     y|Y|yes|YES)
-      # No -w: security(1) prompts for and confirms the secret itself.
-      security add-generic-password -a "$USER" -s "$service" -U \
+      # A trailing -w makes security(1) prompt for the secret without putting it
+      # in shell history, process arguments, or a file.
+      security add-generic-password -a "$USER" -s "$service" -U -w \
         && echo "  stored: $service"
       ;;
     *)
