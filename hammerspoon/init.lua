@@ -10,7 +10,7 @@
 --   2. quickshots — owns the shared Caps (F18) event tap that hone and palette
 --      bind into, so it must start before them.
 --   3. hone — text refinement; also Murmur's cleanup engine, so before murmur.
---   4. murmur, relay — independent apps.
+--   4. murmur, relay, unsub — independent apps, then private local apps.
 --   5. palette.start() — the Caps+K menu, last, so it sees every module.
 
 local logging = require("litelog")
@@ -44,11 +44,20 @@ end
 
 initLog.info("reload started")
 
--- Personal paths, device choices, and model settings live outside the repo.
+-- Personal paths, device choices, and model settings live outside the repo in
+-- ~/.hammerspoon/loadout.local.lua. It may return { apps = { "name", ... } } to
+-- start private modules of your own (loaded after the built-in apps).
+local localApps = {}
 local localConfig = hs.configdir .. "/loadout.local.lua"
 if hs.fs.attributes(localConfig, "mode") == "file" then
-  loadApp("local-config", function() dofile(localConfig) end,
-    "Loadout local configuration failed to load")
+  local ok, res = xpcall(dofile, debug.traceback, localConfig)
+  if ok then
+    initLog.info("local config loaded")
+    if type(res) == "table" and type(res.apps) == "table" then localApps = res.apps end
+  else
+    initLog.error("local config failed", { error = res })
+    hs.alert.show("Loadout local configuration failed to load", 3)
+  end
 end
 
 -- Apply persisted hotkey overrides before anything binds.
@@ -67,11 +76,15 @@ loadApp("murmur", function() require("murmur").start() end)
 -- Relay (quick-launch / voice flows).
 loadApp("relay", function() require("relay").start() end)
 
--- Snag (EquipFlow bug capture → verified GitHub issue).
-loadApp("snag", function() require("snag").start() end)
-
 -- Unsub (Caps+U: unsubscribe from the selected Apple Mail message).
 loadApp("unsub", function() require("unsub").start() end)
+
+-- Private apps named by loadout.local.lua.
+for _, name in ipairs(localApps) do
+  if type(name) == "string" then
+    loadApp(name, function() require(name).start() end)
+  end
+end
 
 -- Palette (Caps+K searchable shortcut menu) — last, so it sees every module.
 loadApp("palette", function() require("palette").start() end,
