@@ -1,0 +1,14 @@
+{
+  "app": "snag",
+  "title": "Snag — Bug Capture",
+  "format": "shell",
+  "target": "~/loadout/apps/snag/snag.conf",
+  "recentsDir": "~/loadout/apps/snag/captures",
+  "fields": [
+    {"key": "SNAG_CAPTURE_ROOT", "label": "Output folder", "type": "folder", "default": "", "help": "Empty = captures/ inside the app dir"},
+    {"key": "SNAG_MODE", "label": "Pipeline mode", "type": "enum", "options": ["report", "verify", "meet"], "default": "report", "help": "report distills to report.md; verify auto-files GitHub issues; meet distills a recorded meeting"},
+    {"key": "SNAG_MAX_SECONDS", "label": "Max recording (seconds)", "type": "int", "default": "600"},
+    {"key": "SNAG_MAX_FRAMES", "label": "Max keyframes", "type": "int", "default": "12", "help": "Cap per capture; long videos spread them across the full length (max 99)"},
+    {"key": "SNAG_DRY_RUN", "label": "Dry run (skip Claude step)", "type": "bool", "default": "false", "help": "Debugging only — stops the pipeline before the Claude step"}
+  ]
+}

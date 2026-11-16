@@ -1,0 +1,13 @@
+{
+  "app": "hone",
+  "title": "Refine (Hone) — AI Text",
+  "format": "json",
+  "target": "~/loadout/settings/hone.settings.json",
+  "postSave": ["/opt/homebrew/bin/hs", "-c", "hs.reload()"],
+  "fields": [
+    {"key": "model", "label": "Refine model", "type": "string", "default": "gpt-5.4"},
+    {"key": "autoRefineModel", "label": "Auto-refine model", "type": "string", "default": "gpt-5.4-nano"},
+    {"key": "reasoningEffort", "label": "Reasoning effort", "type": "enum", "options": ["none", "low", "medium", "high", "xhigh"], "default": "none", "help": "none is fastest"},
+    {"key": "restoreClipboard", "label": "Restore clipboard after paste", "type": "bool", "default": "false"}
+  ]
+}
