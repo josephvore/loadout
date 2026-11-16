@@ -97,10 +97,8 @@ local config = {
   -- if QuickShots' Caps tap is unavailable.
   trigger = false,
 
-  -- Bluetooth headset microphones can change CoreAudio format/route under
-  -- AVAudioEngine and have been the source of installTap crashes. Prefer
-  -- stable dedicated mics in this order; set to {} to use system default.
-  preferredInputDevices = { "Insta360 Link 2C" },
+  -- Use the system microphone unless device names are configured locally.
+  preferredInputDevices = {},
   preferredInputDevice = nil, -- legacy single-name override
 
   -- Speech framework microphone profile: "default" for built-in/ordinary mics,
@@ -2147,7 +2145,7 @@ spawnDaemon = function()
     table.insert(args, "--punctuation")
   end
   table.insert(args, "--content-hint")
-  table.insert(args, config.contentHint or "default")
+  table.insert(args, config.contentHint == "far-field" and "far-field" or "default")
   log.info("spawning daemon", {
     binary = config.binary,
     locale = config.locale,

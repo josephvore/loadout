@@ -52,7 +52,8 @@ Keep the clone at this path because it is the live symlink target.
 
 ## Configuration
 
-Edit the `config` block at the top of `relay.lua`:
+Set `require("relay").config` fields in your private
+`~/.hammerspoon/loadout.local.lua` (see [local configuration](../../SETUP.md#local-configuration)):
 
 - `quickCaptureFile` — path to your notes inbox. Point it at wherever you keep
   quick notes, e.g. an Obsidian vault under iCloud. The parent dir and file are

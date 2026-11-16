@@ -1,6 +1,14 @@
 # ----- Performance: Cached Homebrew prefix -----
 # Cache this to avoid running `brew --prefix` on every shell startup (~40ms savings)
-export BREW_PREFIX="${BREW_PREFIX:-/opt/homebrew}"
+if [[ -z "$BREW_PREFIX" ]]; then
+  if [[ -n "$HOMEBREW_PREFIX" ]]; then
+    export BREW_PREFIX="$HOMEBREW_PREFIX"
+  elif [[ -x /opt/homebrew/bin/brew ]]; then
+    export BREW_PREFIX=/opt/homebrew
+  else
+    export BREW_PREFIX=/usr/local
+  fi
+fi
 
 # ----- pyenv (before Oh My Zsh, lazy-loaded for speed) -----
 export PYENV_ROOT="$HOME/.pyenv"
@@ -77,7 +85,6 @@ setopt INC_APPEND_HISTORY
 setopt autocd
 
 # ----- Aliases -----
-alias cdc='cd ~/code'
 alias myip="curl -s https://ipv4.icanhazip.com/"
 alias zshconfig="$EDITOR ~/.zshrc"
 alias ohmyzsh="$EDITOR ~/.oh-my-zsh"
@@ -149,9 +156,6 @@ if [[ -o interactive && -t 0 && -t 1 ]] && command -v fzf &>/dev/null; then
   source <(fzf --zsh)
 fi
 
-# ----- Certificates -----
-[[ -r "$HOME/.certs/cacert.pem" ]] && export SSL_CERT_FILE="$HOME/.certs/cacert.pem"
-
 # ----- zoxide -----
 command -v zoxide &>/dev/null && eval "$(zoxide init zsh)"
 
@@ -219,4 +223,9 @@ if command -v brew &>/dev/null; then
   _libpq="$(brew --prefix libpq 2>/dev/null)"
   [[ -n "$_libpq" && -d "$_libpq/bin" ]] && export PATH="$_libpq/bin:$PATH"
   unset _libpq
+fi
+
+# Machine-specific settings stay outside tracked configuration.
+if [[ -r "$HOME/.zshrc.local" ]]; then
+  source "$HOME/.zshrc.local"
 fi

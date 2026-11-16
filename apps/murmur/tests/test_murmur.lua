@@ -236,73 +236,13 @@ local terms = core.contextTerms(glossary, corrections, 100)
 check(table.concat(terms, "|") == "Wispr Flow|GPT-5.6|Newest|Older", "context priority")
 os.remove(glossary); os.remove(corrections)
 
--- Keep learned user corrections out of the shipped defaults. Exercise the same
--- path with deterministic temporary fixtures instead.
-local shippedCorrections = assert(io.open(root .. "/data/dictation_corrections.tsv", "r"))
-for line in shippedCorrections:lines() do
-  check(line:match("^%s*$") ~= nil or line:match("^%s*#") ~= nil,
-    "shipped corrections must contain comments only: " .. line)
-end
-shippedCorrections:close()
-
-local baselineGlossary, baselineCorrections = os.tmpname(), os.tmpname()
-local bg = assert(io.open(baselineGlossary, "w"))
-bg:write(
-  "GitHub = get hub, get have\n",
-  "GPT-5.4-mini = GPT 5.4 mini, GPD 5.4 mini\n",
-  "Insta360 Link 2C = instant 360 link to C, Insta 360 link to C\n",
-  "CoreAudio = court audio\n")
-bg:close()
-local bc = assert(io.open(baselineCorrections, "w"))
-bc:write(
-  "get have the OpenAI\tGitHub and the OpenAI\n",
-  "turns like Postgres\tTerms like Postgres\n",
-  "model lumber or substitute\tmodel number or substitute\n",
-  "create a conference of plan\tcreate a comprehensive plan\n",
-  "without adding a necessary punctuation\twithout adding unnecessary punctuation\n")
-bc:close()
-
-local baseline = core.cleanupTranscript(
-  "I was testing Hammerspoon Codex get have the OpenAI responses API. "
-    .. "Turns like Postgres GPT 5.4 mini instant 360 link to C and court audio "
-    .. "should remain spoken. Do not change a model lumber or substitute it.",
-  {
-    glossaryPath = baselineGlossary,
-    correctionsPath = baselineCorrections,
-    voiceCommands = true,
-    lightCleanup = true,
-  })
-for _, required in ipairs({
-  "GitHub and the OpenAI", "Terms like Postgres", "GPT-5.4-mini",
-  "Insta360 Link 2C", "CoreAudio", "model number or substitute",
-}) do
-  check(baseline:find(required, 1, true) ~= nil,
-    "baseline correction missing " .. required .. ": " .. baseline)
-end
-
-local planPhrase = core.cleanupTranscript(
-  "OK create a conference of plan to fix",
-  {
-    glossaryPath = baselineGlossary,
-    correctionsPath = baselineCorrections,
-    lightCleanup = true,
-  })
-check(planPhrase == "OK create a comprehensive plan to fix",
-  "comprehensive plan correction")
-
-local remainingBaseline = core.cleanupTranscript(
-  "without adding a necessary punctuation. Terms like GPD 5.4 mini, "
-    .. "Insta 360 link to C, and CoreAudio",
-  {
-    glossaryPath = baselineGlossary,
-    correctionsPath = baselineCorrections,
-    lightCleanup = true,
-  })
-check(remainingBaseline ==
-  "without adding unnecessary punctuation. Terms like GPT-5.4-mini, "
-    .. "Insta360 Link 2C, and CoreAudio",
-  "remaining recorded variants: " .. remainingBaseline)
-os.remove(baselineGlossary); os.remove(baselineCorrections)
+local baseline = core.cleanupTranscript("Use hammer spoon with post gres and git hub", {
+  glossaryPath = root .. "/data/dictation_glossary.txt",
+  correctionsPath = root .. "/data/dictation_corrections.tsv",
+  lightCleanup = true,
+})
+check(baseline == "Use Hammerspoon with Postgres and GitHub",
+  "example data corrections: " .. baseline)
 
 local filler = core.cleanupTranscript("Um keep this uh exact", {
   voiceCommands = true, lightCleanup = true,
