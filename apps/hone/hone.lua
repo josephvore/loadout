@@ -219,7 +219,7 @@ local function keychainKey(service)
   end
   local out = hs.execute(
     "/usr/bin/security find-generic-password -s '" ..
-    service .. "' -w 2>/dev/null")
+    tostring(service):gsub("'", "'\\''") .. "' -w 2>/dev/null")
   out = out and out:gsub("%s+$", "") or ""
   cachedKeys[service] = out ~= "" and out or false -- false = known-missing
   return cachedKeys[service] or nil
