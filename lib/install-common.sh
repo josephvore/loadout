@@ -37,7 +37,15 @@ ld_copy_if_absent() {
   local src="$1" dest="$2"
   if [ ! -e "$src" ]; then echo "skip (missing in repo): $src"; return; fi
   mkdir -p "$(dirname "$dest")"
-  if [ -e "$dest" ]; then
+  # Never follow unusable user-owned state and then claim installation worked.
+  # A valid symlink to a regular file is supported; dangling links, directories,
+  # and other non-files need an explicit user decision.
+  if { [ -L "$dest" ] && [ ! -e "$dest" ]; } \
+      || { [ -e "$dest" ] && [ ! -f "$dest" ]; }; then
+    echo "ERROR: user data destination is not a usable file: $dest" >&2
+    return 1
+  fi
+  if [ -e "$dest" ] || [ -L "$dest" ]; then
     echo "keep (already present): $dest"
   else
     cp "$src" "$dest"
@@ -52,6 +60,14 @@ ld_install_core() {
   # one containing ".." from the calling app's dir) — otherwise every app would
   # re-link the shared files with a different-looking target and churn backups.
   local root; root="$(cd "$1" && pwd)"
+  if [ -L "$HAMMER_DIR" ]; then
+    echo "ERROR: refusing to install through symlinked Hammerspoon directory: $HAMMER_DIR" >&2
+    return 1
+  fi
+  if [ -e "$HAMMER_DIR" ] && [ ! -d "$HAMMER_DIR" ]; then
+    echo "ERROR: Hammerspoon config path is not a directory: $HAMMER_DIR" >&2
+    return 1
+  fi
   ld_link "${root}/hammerspoon/init.lua"    "${HAMMER_DIR}/init.lua"
   ld_link "${root}/lib/litelog/litelog.lua" "${HAMMER_DIR}/litelog.lua"
 }

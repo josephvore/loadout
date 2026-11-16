@@ -4,35 +4,74 @@ Loadout doesn't install system software for you — it tells you what's missing 
 stops short of touching your machine. Install what you need from this list, then
 run `./bootstrap.sh`. Everything here is a one-time setup.
 
-## Required for the core apps
+## Base Hammerspoon apps
+
+Hone, Palette, and Relay do not require Murmur's newer speech stack. To install
+any of them on its own, start with these base system requirements, then follow
+that app's README for permissions, keys, or optional integrations:
 
 | Need | Why | Install |
 |---|---|---|
-| **macOS 26+** | Murmur uses Apple's on-device SpeechAnalyzer | — |
-| **[Homebrew](https://brew.sh)** | package manager for the tools below | see brew.sh (run their install script yourself) |
-| **[Hammerspoon](https://www.hammerspoon.org)** | runtime for QuickShots, Murmur, Hone, Relay, Palette | `brew install --cask hammerspoon` |
-| **git** | clones QuickShots during bootstrap | ships with the Xcode CLT below |
+| **macOS 13 or later** | supported baseline for the base utilities | System Settings → General → Software Update |
+| **[Hammerspoon](https://www.hammerspoon.org) 1.1.1+** | app runtime | `brew install --cask hammerspoon` |
+| **git** | clones the repository | included with the Xcode Command Line Tools; run `xcode-select --install` if `git --version` is unavailable |
+
+## Additional requirements for the full suite
+
+| Need | Why | Install |
+|---|---|---|
+| **macOS 26 or later** | Murmur uses SpeechAnalyzer and the macOS 26 SDK | System Settings → General → Software Update |
+| **Apple Silicon (tested)** | Murmur's on-device speech stack is verified on arm64; Intel is currently unverified | check with `uname -m` (`arm64` is the tested result) |
+| **2 GB free storage** | SwiftPM build cache plus about 600 MB of speech models | check with `df -h "$HOME"` |
+
+[Homebrew](https://brew.sh) is the recommended installer, not an application
+runtime. Install Homebrew yourself, then use the commands in this document.
 
 ## Required to build Murmur's dictation daemon
 
 | Need | Why | Install |
 |---|---|---|
-| **Xcode Command Line Tools** | Swift 6 toolchain + macOS SDK to build `hs-dictate` | `xcode-select --install` |
+| **Xcode 26 Command Line Tools** | Swift 6 + macOS 26 SDK to build `hs-dictate` | `xcode-select --install` (finish the macOS dialog before continuing) |
 
-The first Murmur build downloads the [FluidAudio](https://github.com/FluidInference/FluidAudio)
-package and its speech models (~570MB) to `~/Library/Application Support/FluidAudio/`.
-If the toolchain is missing, bootstrap installs everything else and skips this build;
-run `~/.hammerspoon/murmur/hs-dictate/build.sh` once the tools are in place.
+Verify the toolchain before bootstrapping:
+
+```sh
+swift --version                         # Apple Swift 6.x
+xcrun --sdk macosx --show-sdk-version  # 26.x
+```
+
+The first **build** downloads the
+[FluidAudio](https://github.com/FluidInference/FluidAudio) Swift package and its
+dependencies into SwiftPM's build cache. The first **Murmur launch** downloads
+the roughly 480 MB batch model and 120 MB streaming model to
+`~/Library/Application Support/FluidAudio/`. Audio and speech recognition stay
+local; only optional LLM cleanup sends text to a provider.
+
+If the daemon build fails, bootstrap finishes the other installs and exits 1.
+Fix the toolchain, run `~/.hammerspoon/murmur/hs-dictate/build.sh`, then re-run
+`./bootstrap.sh`.
+
+## Required only for tests
+
+| Need | Why | Install |
+|---|---|---|
+| **Lua 5.4+** | Murmur tests and Lua parse checks | `brew install lua` |
+| **ShellCheck** | shell safety checks | `brew install shellcheck` |
+| **zsh** | bare-shell smoke test | included with macOS |
 
 ## Optional
 
 | Need | Why | Install |
 |---|---|---|
-| **[Raycast](https://raycast.com)** | Reap's dropdown UI; Relay's dictation deeplink | `brew install --cask raycast` |
-| **API key** — OpenAI (and/or Groq, Cerebras) | Hone refinement + Murmur's cleanup pass | provider dashboards; store with `apps/hone/setup-keys.sh` |
+| **[Raycast](https://raycast.com)** | Reap's dropdown UI; Relay's optional deeplink | `brew install --cask raycast` |
+| **[OpenAI key](https://platform.openai.com/api-keys)** | Hone manual refinement and optional Murmur cleanup | store with `apps/hone/setup-keys.sh` |
+| **[Groq key](https://console.groq.com/keys)** | optional Murmur cleanup provider | store with `apps/hone/setup-keys.sh` |
+| **[Cerebras key](https://cloud.cerebras.ai/)** | optional Murmur cleanup provider | store with `apps/hone/setup-keys.sh` |
 
-Murmur and Hone work without keys in a limited way (Murmur can paste raw transcripts
-via the "Literal" profile), but the LLM cleanup/refine features need at least one key.
+Murmur works without a key and can stay fully local; Hone's manual refinement
+requires an OpenAI key. Loadout does not use API-key environment variables or an
+`.env` file. Keys live in macOS Keychain. Provider billing, retention, and usage
+policies apply to the text sent to them.
 
 ## Optional — for the shell config (`--with-shell`)
 
@@ -43,6 +82,9 @@ them with Homebrew, or run `brew bundle` against the repo's [Brewfile](Brewfile)
 brew bundle --file=Brewfile
 ```
 
-CLI tools: `fzf`, `eza`, `zoxide`, `fnm`, `pyenv`, `direnv`, `bat`, `fd`.
-Also [Oh My Zsh](https://ohmyz.sh) and the [Pure](https://github.com/sindresorhus/pure)
-prompt (installed per their own instructions, not via Homebrew).
+CLI tools: `fzf`, `eza`, `zoxide`, `fnm`, `pyenv`, `direnv`, `bat`, and `fd`.
+Shell integrations: `pure`, `zsh-autosuggestions`, `zsh-completions`, and
+`zsh-syntax-highlighting`. The Brewfile includes all of them plus the test tools.
+[Oh My Zsh](https://ohmyz.sh) is optional and installed via its own instructions.
+Every integration is guarded; missing optional tools leave the stock command or
+prompt in place.

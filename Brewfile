@@ -20,3 +20,8 @@ brew "direnv"   # per-directory env
 brew "bat"      # cat with syntax highlighting
 brew "fd"       # fast find
 brew "lua"      # to run the test suite locally
+brew "shellcheck" # shell linting used by ./test.sh and CI
+brew "pure"     # zsh prompt
+brew "zsh-autosuggestions"
+brew "zsh-completions"
+brew "zsh-syntax-highlighting"

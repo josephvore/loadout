@@ -9,16 +9,19 @@ export PYENV_ROOT="$HOME/.pyenv"
 typeset -U path PATH fpath  # Prevent duplicate PATH/fpath entries
 export PATH="$HOME/bin:$HOME/.local/bin:$HOME/.bun/bin:$PYENV_ROOT/shims:$PYENV_ROOT/bin:$BREW_PREFIX/bin:/usr/local/bin:$HOME/go/bin:$PATH"
 
-# Lazy-load pyenv (~100ms savings)
-pyenv() {
-  unset -f pyenv python python3 pip pip3
-  eval "$(command pyenv init - zsh)"
-  pyenv "$@"
-}
-python()  { unset -f python;  eval "$(command pyenv init - zsh)"; python "$@"; }
-python3() { unset -f python3; eval "$(command pyenv init - zsh)"; python3 "$@"; }
-pip()     { unset -f pip;     eval "$(command pyenv init - zsh)"; pip "$@"; }
-pip3()    { unset -f pip3;    eval "$(command pyenv init - zsh)"; pip3 "$@"; }
+# Lazy-load pyenv (~100ms savings) only when it is installed. Otherwise leave
+# the system python/pip commands untouched.
+if command -v pyenv &>/dev/null; then
+  pyenv() {
+    unset -f pyenv python python3 pip pip3
+    eval "$(command pyenv init - zsh)"
+    pyenv "$@"
+  }
+  python()  { unset -f python;  eval "$(command pyenv init - zsh)"; python "$@"; }
+  python3() { unset -f python3; eval "$(command pyenv init - zsh)"; python3 "$@"; }
+  pip()     { unset -f pip;     eval "$(command pyenv init - zsh)"; pip "$@"; }
+  pip3()    { unset -f pip3;    eval "$(command pyenv init - zsh)"; pip3 "$@"; }
+fi
 
 # ----- Oh My Zsh -----
 export ZSH="$HOME/.oh-my-zsh"
@@ -28,10 +31,9 @@ ZSH_THEME=""
 HYPHEN_INSENSITIVE="true"
 zstyle ':omz:update' mode auto
 
-# Plugins (removed zsh-completions - see note below)
+# Oh My Zsh built-in plugins. Homebrew-managed plugins are sourced below.
 plugins=(
   git
-  zsh-autosuggestions
   copyfile
   web-search
 )
@@ -86,15 +88,18 @@ alias ports='lsof -i -P -n | grep LISTEN'
 alias gs='git status'
 alias gp='git pull'
 
-# eza (modern ls replacement with icons)
-alias ls='eza --icons --group-directories-first'
-alias ll='eza -la --icons --group-directories-first --git'
-alias lt='eza --tree --level=2 --icons'
-alias la='eza -a --icons --group-directories-first'
+# eza (modern ls replacement with icons); keep the system ls when absent.
+if command -v eza &>/dev/null; then
+  alias ls='eza --icons --group-directories-first'
+  alias ll='eza -la --icons --group-directories-first --git'
+  alias lt='eza --tree --level=2 --icons'
+  alias la='eza -a --icons --group-directories-first'
+fi
 
 # ----- fzf (fuzzy finder) -----
 # Use fd instead of find (faster, respects .gitignore)
-export FZF_DEFAULT_COMMAND='fd --type f --hidden --follow --exclude .git'
+command -v fd &>/dev/null && \
+  export FZF_DEFAULT_COMMAND='fd --type f --hidden --follow --exclude .git'
 
 # Default options with Material Design colors
 export FZF_DEFAULT_OPTS='
@@ -112,20 +117,26 @@ export FZF_DEFAULT_OPTS='
   --bind="ctrl-y:execute-silent(echo -n {+} | pbcopy)+abort"
 '
 
-# Ctrl+T: File search with bat preview
-export FZF_CTRL_T_COMMAND="$FZF_DEFAULT_COMMAND"
-export FZF_CTRL_T_OPTS='
-  --preview="bat --style=numbers --color=always --line-range=:500 {}"
-  --preview-window=right:50%:wrap
-  --bind="ctrl-/:toggle-preview"
-'
+# Ctrl+T: File search; add a bat preview only when bat is installed.
+[[ -n "${FZF_DEFAULT_COMMAND:-}" ]] && \
+  export FZF_CTRL_T_COMMAND="$FZF_DEFAULT_COMMAND"
+if command -v bat &>/dev/null; then
+  export FZF_CTRL_T_OPTS='
+    --preview="bat --style=numbers --color=always --line-range=:500 {}"
+    --preview-window=right:50%:wrap
+    --bind="ctrl-/:toggle-preview"
+  '
+fi
 
-# Alt+C: Directory search with eza preview
-export FZF_ALT_C_COMMAND='fd --type d --hidden --follow --exclude .git'
-export FZF_ALT_C_OPTS='
-  --preview="eza --tree --level=2 --icons --color=always {}"
-  --preview-window=right:50%:wrap
-'
+# Alt+C: Directory search and preview, enabled when their tools are installed.
+command -v fd &>/dev/null && \
+  export FZF_ALT_C_COMMAND='fd --type d --hidden --follow --exclude .git'
+if command -v eza &>/dev/null; then
+  export FZF_ALT_C_OPTS='
+    --preview="eza --tree --level=2 --icons --color=always {}"
+    --preview-window=right:50%:wrap
+  '
+fi
 
 # Ctrl+R: History search
 export FZF_CTRL_R_OPTS='
@@ -159,6 +170,8 @@ export BAT_THEME="OneHalfDark"
 
 # ----- Autosuggestions style -----
 ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE='fg=#546e7a'
+[[ -r "$BREW_PREFIX/share/zsh-autosuggestions/zsh-autosuggestions.zsh" ]] && \
+  source "$BREW_PREFIX/share/zsh-autosuggestions/zsh-autosuggestions.zsh"
 
 # ----- Completion styling -----
 zstyle ':completion:*' menu select
@@ -182,19 +195,21 @@ export ENABLE_TOOL_SEARCH=auto:5
 [[ -r "$BREW_PREFIX/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh" ]] && \
   source "$BREW_PREFIX/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh"
 
-# Syntax highlighting colors (Material Design)
-ZSH_HIGHLIGHT_STYLES[command]='fg=#c3e88d'
-ZSH_HIGHLIGHT_STYLES[alias]='fg=#c3e88d'
-ZSH_HIGHLIGHT_STYLES[builtin]='fg=#82aaff'
-ZSH_HIGHLIGHT_STYLES[function]='fg=#82aaff'
-ZSH_HIGHLIGHT_STYLES[path]='fg=#89ddff,underline'
-ZSH_HIGHLIGHT_STYLES[single-quoted-argument]='fg=#ffcb6b'
-ZSH_HIGHLIGHT_STYLES[double-quoted-argument]='fg=#ffcb6b'
-ZSH_HIGHLIGHT_STYLES[commandseparator]='fg=#c792ea'
+# Syntax highlighting colors (Material Design), only when the plugin loaded.
+if (( ${+ZSH_HIGHLIGHT_STYLES} )); then
+  ZSH_HIGHLIGHT_STYLES[command]='fg=#c3e88d'
+  ZSH_HIGHLIGHT_STYLES[alias]='fg=#c3e88d'
+  ZSH_HIGHLIGHT_STYLES[builtin]='fg=#82aaff'
+  ZSH_HIGHLIGHT_STYLES[function]='fg=#82aaff'
+  ZSH_HIGHLIGHT_STYLES[path]='fg=#89ddff,underline'
+  ZSH_HIGHLIGHT_STYLES[single-quoted-argument]='fg=#ffcb6b'
+  ZSH_HIGHLIGHT_STYLES[double-quoted-argument]='fg=#ffcb6b'
+  ZSH_HIGHLIGHT_STYLES[commandseparator]='fg=#c792ea'
+fi
 
 # Claude Code. Append --dangerously-skip-permissions yourself if you want to
 # skip per-action approval (convenient, but removes a safety gate).
-alias cc='claude'
+command -v claude &>/dev/null && alias cc='claude'
 
 # direnv (auto-loads .envrc files; e.g. per-project env vars / tokens)
 command -v direnv &>/dev/null && eval "$(direnv hook zsh)"

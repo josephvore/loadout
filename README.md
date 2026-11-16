@@ -12,7 +12,7 @@ whole loadout, or just the pieces you want.
 | App | What it does | Replaces |
 |---|---|---|
 | [QuickShots](https://github.com/josephvore/quickshots) | Drag-area screenshots that auto-group and smart-paste (as images, files, or paths) | CleanShot X · Shottr · Xnapper |
-| [Murmur](https://github.com/josephvore/murmur) | On-device, push-to-talk dictation with an LLM cleanup pass | Wispr Flow · Superwhisper |
+| [Murmur](https://github.com/josephvore/murmur) | On-device, push-to-talk dictation with an optional LLM cleanup pass | Wispr Flow · Superwhisper |
 | [Hone](apps/hone) | Rewrite the clipboard or a selection for clarity, in place, one keypress | Raycast AI · Grammarly rewrite |
 | [Relay](apps/relay) | Quick-launch / voice flows into your other tools | Alfred · Raycast workflows |
 | [Palette](apps/palette) | Searchable Caps+K menu of every shortcut, with rebind | CheatSheet · KeyCue |
@@ -22,9 +22,22 @@ Two apps also have standalone repos for discovery: [QuickShots](https://github.c
 (its own source of truth — the bootstrap script clones and wires it in for you) and
 [Murmur](https://github.com/josephvore/murmur) (mirrored from `apps/murmur`, kept in sync from here).
 
+The software is free. Hone and Murmur's optional cleanup send text—not audio—to
+the API provider you configure, whose billing and data policies apply.
+
 ## Quick start
 
+First install the required system software: macOS 26 or later, Hammerspoon
+1.1.1 or later, and the Xcode 26 Command Line Tools (Swift 6 + macOS 26 SDK).
+Murmur is tested on Apple Silicon; Intel is currently unverified. Keep at least
+2 GB free for Murmur's build cache and on-device speech models.
+See [PREREQUISITES.md](PREREQUISITES.md) for exact checks and optional tools.
+
 ```sh
+xcode-select --install              # finish the macOS installer dialog first
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+# Follow Homebrew's printed PATH instructions, then:
+brew install --cask hammerspoon
 git clone https://github.com/josephvore/loadout.git ~/loadout
 cd ~/loadout
 ./bootstrap.sh                 # installs the Hammerspoon apps + QuickShots
@@ -32,19 +45,53 @@ cd ~/loadout
 ```
 
 `bootstrap.sh` is idempotent and non-destructive — it backs up anything it would
-replace and **never installs system software for you**. Make sure the
-[prerequisites](PREREQUISITES.md) are in place first.
+replace and **never installs system software for you**. It finishes independent
+installs but exits nonzero if Hammerspoon, QuickShots, or Murmur is unavailable.
 
-Then finish the three steps only you can do — API keys, the Caps Lock remap, and
-macOS permissions. The bootstrap prints them, and [SETUP.md](SETUP.md) is the full
-checklist (it also doubles as a runbook you can hand to an AI coding agent).
+The installers use symlinks, so the clone is the live installation: keep it at
+the cloned path. Re-run the relevant installer after moving it.
+
+Then finish the human-only steps — launch Hammerspoon, grant permissions, enter
+optional API keys, remap Caps Lock, and register Reap's Raycast script directory.
+The bootstrap prints them, and [SETUP.md](SETUP.md) is the full checklist.
+
+## Test
+
+With Lua 5.4+ and ShellCheck installed:
+
+```sh
+./test.sh
+```
+
+This runs Murmur's deterministic suite, parses every Lua/shell source, checks
+the bare-zsh fallback, runs Reap in dry mode, and enforces ShellCheck. See
+[CONTRIBUTING.md](CONTRIBUTING.md) and [CHANGELOG.md](CHANGELOG.md).
+
+## Update and uninstall
+
+The clone is the live install. Update both sources, then re-run the same
+idempotent bootstrap command:
+
+```sh
+git -C ~/loadout pull --ff-only
+git -C ~/code/quickshots pull --ff-only
+cd ~/loadout && ./bootstrap.sh
+```
+
+If you used a custom `--quickshots-dir` or `--with-shell`, use those same values
+again. To uninstall, first run QuickShots' `caps-uninstall.sh` if you enabled the
+Caps Lock remap, quit Hammerspoon, and remove only symlinks whose `readlink`
+targets are inside the Loadout or QuickShots clone. `~/bin/hs-dictate` can then
+be removed separately. Murmur's glossary, corrections, snippets, model cache,
+and rotating logs are intentionally retained unless you explicitly remove
+them. Remove either clone only after its live symlinks are gone.
 
 ## Why Caps Lock
 
 Most of these tools bind to **Caps Lock as a modifier** (Caps+A to capture, Caps+K
 for the menu, and so on). QuickShots remaps Caps Lock to a spare key (F18) and owns
-a shared event tap the other apps hook into. Apps that don't use Caps (Murmur on
-Right-Command, Relay on Ctrl+Alt+Cmd) bind their own collision-free hotkeys. See
+a shared event tap the other apps hook into (Murmur dictates on Caps+M). Apps that
+don't use Caps (Relay on Ctrl+Alt+Cmd) bind their own collision-free hotkeys. See
 each app's README for its bindings.
 
 ## Repo layout
