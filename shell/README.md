@@ -17,9 +17,17 @@ optional tool list (and the [Brewfile](../Brewfile) to install them).
 
 ## Install
 
+Review the optional dependencies in [PREREQUISITES.md](../PREREQUISITES.md), then
+from the repository root:
+
 ```sh
-./install.sh          # or, from the repo root:  ./bootstrap.sh --with-shell
+git clone https://github.com/josephvore/loadout.git ~/loadout
+cd ~/loadout
+shell/install.sh      # or install the suite with: ./bootstrap.sh --with-shell
 ```
 
 Idempotent; backs up any existing `~/.zshrc`, `~/.zprofile`, or `~/.zshenv` first.
-Open a new terminal (or `source ~/.zshrc`) to load it.
+Keep the clone because it is the live symlink target. Open a new terminal (or
+`source ~/.zshrc`) to load it; `zsh -lic 'echo shell loaded'` should print
+`shell loaded` without a missing-tool error. Verify all repository checks with
+`./test.sh`; changes are recorded in the root [changelog](../CHANGELOG.md).

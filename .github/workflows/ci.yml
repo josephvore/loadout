@@ -7,24 +7,27 @@ on:
 
 jobs:
   test:
-    name: Lua tests + shellcheck
+    name: Full source checks
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Lua
-        run: sudo apt-get update && sudo apt-get install -y lua5.4
+      - name: Install test dependencies
+        run: sudo apt-get update && sudo apt-get install -y lua5.4 shellcheck zsh
 
-      - name: Run Lua tests
-        run: lua5.4 apps/murmur/tests/test_murmur.lua
+      - name: Run test suite
+        run: ./test.sh
 
-      - name: ShellCheck
+  macos-smoke:
+    name: macOS built-in tool smoke
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reap on stock Bash
+        run: /bin/bash apps/reap/reap.sh dry
+      - name: Bare zsh config
         run: |
-          shellcheck --version
-          shellcheck -x \
-            bootstrap.sh \
-            shell/install.sh \
-            lib/install-common.sh \
-            apps/*/install.sh \
-            apps/hone/setup-keys.sh \
-            apps/reap/reap.sh
+          test_home="$(mktemp -d)"
+          HOME="$test_home" BREW_PREFIX="$test_home/no-homebrew" \
+            PATH="/usr/bin:/bin:/usr/sbin:/sbin" \
+            /bin/zsh -f -c 'source shell/.zshrc; eval "ls -d / >/dev/null"'

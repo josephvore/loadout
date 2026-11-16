@@ -8,6 +8,7 @@
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091  # resolved from this script's absolute DIR
 . "${DIR}/../lib/install-common.sh"
 
 ld_link "${DIR}/.zshrc"    "${HOME}/.zshrc"

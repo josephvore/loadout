@@ -41,9 +41,10 @@ loading — this is what keeps installs composable and avoids duplicate loaders.
 ## Before you open a PR
 
 ```sh
-lua apps/murmur/tests/test_murmur.lua   # Lua tests
-shellcheck -x bootstrap.sh apps/*/install.sh lib/install-common.sh shell/install.sh
+./test.sh
 ```
 
-CI runs both on every PR. Keep documentation clear and concise — match the tone of
-the existing READMEs.
+This runs the Lua regressions and parse checks, a stock-Bash Reap dry run, a
+bare-zsh smoke, and ShellCheck. Install its test dependencies with
+`brew install lua shellcheck`; CI runs the same entrypoint on every PR. Keep
+documentation clear and concise — match the tone of the existing READMEs.
