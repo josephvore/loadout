@@ -78,7 +78,14 @@ SHELL_FILES=(
   apps/reap/install.sh
   apps/reap/reap.sh
   apps/relay/install.sh
+  apps/unsub/install.sh
+  lib/settings/build.sh
 )
+
+echo "-- Python syntax checks --"
+while IFS= read -r file; do
+  python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read(), sys.argv[1])' "$file"
+done < <(git ls-files '*.py')
 
 echo "-- shell parse checks --"
 for file in "${SHELL_FILES[@]}"; do
