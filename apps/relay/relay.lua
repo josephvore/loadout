@@ -246,6 +246,7 @@ end
 -- failure cannot prevent the others from registering.
 ----------------------------------------------------------------
 function M.start()
+  pcall(function() require("settings_overlay").apply("relay", config) end)
   local function bind(spec, fn, label)
     if not spec then return end
     local ok, err = pcall(function()
