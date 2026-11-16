@@ -1,0 +1,13 @@
+{
+  "app": "relay",
+  "title": "Relay — Quick Launch",
+  "format": "json",
+  "target": "~/loadout/settings/relay.settings.json",
+  "postSave": ["/opt/homebrew/bin/hs", "-c", "hs.reload()"],
+  "fields": [
+    {"key": "quickCaptureFile", "label": "Quick-capture note", "type": "string", "default": "~/Documents/Quick Capture.md", "help": "Markdown file Obsidian capture appends to"},
+    {"key": "claudeCommand", "label": "Voice Claude command", "type": "string", "default": "claude"},
+    {"key": "claudeDangerouslySkipPermissions", "label": "Skip Claude permission prompts", "type": "bool", "default": "false", "help": "Adds --dangerously-skip-permissions"},
+    {"key": "dogfoodStartWispr", "label": "Start Wispr after opening Claude panel", "type": "bool", "default": "true"}
+  ]
+}
