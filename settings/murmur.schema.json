@@ -2,8 +2,8 @@
   "app": "murmur",
   "title": "Murmur — Dictation",
   "format": "json",
-  "target": "~/loadout/settings/murmur.settings.json",
-  "postSave": ["/opt/homebrew/bin/hs", "-c", "hs.reload()"],
+  "target": "~/.hammerspoon/settings/murmur.json",
+  "postSave": ["/bin/zsh", "-lc", "hs -c 'hs.reload()'"],
   "fields": [
     {"key": "parakeet", "label": "Final-pass ASR (Parakeet)", "type": "enum", "options": ["off", "v2", "v3"], "default": "v2", "help": "v2 = English-only, best for en_US; v3 = multilingual; off = Apple finals only"},
     {"key": "stream", "label": "Live-text streaming ASR", "type": "enum", "options": ["off", "eou160", "eou320"], "default": "eou320", "help": "eou160 = lowest latency; eou320 = more accurate live text"},

@@ -53,7 +53,8 @@ ld_copy_if_absent() {
   fi
 }
 
-# Install the pieces every Loadout app shares: the canonical loader and litelog.
+# Install the pieces every Loadout app shares: the canonical loader, litelog,
+# and the settings overlay.
 # Safe to call from multiple app installers — the links are identical.
 ld_install_core() {
   # Canonicalize the root so the symlink target is a clean absolute path (not
@@ -70,6 +71,19 @@ ld_install_core() {
   fi
   ld_link "${root}/hammerspoon/init.lua"    "${HAMMER_DIR}/init.lua"
   ld_link "${root}/lib/litelog/litelog.lua" "${HAMMER_DIR}/litelog.lua"
+  ld_link "${root}/lib/settings_overlay/settings_overlay.lua" \
+    "${HAMMER_DIR}/settings_overlay.lua"
+}
+
+# Build the shared settings tool (Caps+K's Settings tab writes through it).
+# Needs the Swift toolchain; without it, settings stay read-only.
+ld_build_settings() {
+  local root; root="$(cd "$1" && pwd)"
+  if ! command -v swiftc >/dev/null 2>&1; then
+    echo "skip: swiftc not found — install Xcode Command Line Tools to edit app settings"
+    return 0
+  fi
+  "${root}/lib/settings/build.sh"
 }
 
 # Ask Hammerspoon to reload its config, if the `hs` CLI is available.
