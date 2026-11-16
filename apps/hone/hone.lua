@@ -21,7 +21,7 @@ local log = require("litelog").new("hone")
 local config = {
   keychainService = "openai-refine",
 
-  -- This project has access to the GPT-5 family only.
+  -- Default models; override locally to match your provider access.
   --   model           — manual Caps+C / Caps+S. gpt-5.4 edits best (cuts
   --                     filler, not just grammar) at ~1.4-2.4s.
   --   autoRefineModel — default dictation cleanup on the OpenAI provider.

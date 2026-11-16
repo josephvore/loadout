@@ -158,6 +158,12 @@ Reload Hammerspoon, hold Caps and press M, speak a short phrase, and release Cap
 first take can wait while the local models download; the phrase should then paste
 into the focused app.
 
+## Configuration
+
+Murmur uses your system microphone. Set device preferences and other overrides
+in `~/.hammerspoon/loadout.local.lua`, not the linked module; see
+[local configuration](../../SETUP.md#local-configuration).
+
 ## Data files
 
 Your personal dictation data lives in `~/.hammerspoon/murmur/`:

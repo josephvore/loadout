@@ -38,6 +38,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   uninstall behavior, tests, and human-only steps are documented explicitly.
 - `./test.sh` is the single local/CI test entrypoint, with an additional macOS
   smoke job for built-in Bash and zsh.
+- Shell environment files are private copies, never tracked symlink targets;
+  existing environments are preserved when installing or reinstalling.
+- Machine-specific shell and Hammerspoon settings have local override files.
+- Murmur uses the system microphone and ships generic vocabulary examples.
 - Renamed the shared logger to **litelog**; the canonical `hammerspoon/init.lua`
   now `pcall`-loads whichever apps are installed and owns loading (installers no
   longer append their own loader block).
