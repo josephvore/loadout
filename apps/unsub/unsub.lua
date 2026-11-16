@@ -14,14 +14,12 @@ local M = {}
 ----------------------------------------------------------------
 -- USER CONFIGURATION
 ----------------------------------------------------------------
-local HOME = os.getenv("HOME") or ""
-
 local config = {
   capsUnsub = { {}, "u" },                              -- Caps+U
   fallbackUnsub = { { "ctrl", "alt", "cmd" }, "u" },    -- if the Caps tap is unavailable
 
   python = "/usr/bin/python3",
-  script = HOME .. "/loadout/apps/unsub/unsub.py",
+  script = hs.configdir .. "/unsub.py",  -- linked by install.sh
 
   -- Editable from Caps+K → Unsubscribe (settings/unsub.schema.json).
   mailtoMode = "send",   -- "send" | "compose" (draft opens; you press Send)
@@ -63,10 +61,11 @@ function M.unsubscribe(opts)
   alert(dry and "Unsub: dry run…" or "Unsubscribing…", 1)
   log.info("run", { dry = dry and true or false })
 
-  local timer
+  local timer, timedOut = nil, false
   running = hs.task.new(config.python, function(code, stdout, stderr)
     if timer then timer:stop() end
     running = nil
+    if timedOut then return end -- the timeout already alerted
     for line in (stderr or ""):gmatch("[^\n]+") do log.info("py", { line = line:sub(1, 300) }) end
     local ok, res = pcall(hs.json.decode, stdout or "")
     if not ok or type(res) ~= "table" then
@@ -84,6 +83,7 @@ function M.unsubscribe(opts)
 
   timer = hs.timer.doAfter(config.timeoutSeconds, function()
     if running and running:isRunning() then
+      timedOut = true
       running:terminate()
       log.warn("timed out")
       alert("⚠️ Unsub timed out", 2)

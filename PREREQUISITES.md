@@ -6,15 +6,16 @@ run `./bootstrap.sh`. Everything here is a one-time setup.
 
 ## Base Hammerspoon apps
 
-Hone, Palette, and Relay do not require Murmur's newer speech stack. To install
-any of them on its own, start with these base system requirements, then follow
-that app's README for permissions, keys, or optional integrations:
+Hone, Palette, Relay, and Unsub do not require Murmur's newer speech stack. To
+install any of them on its own, start with these base system requirements, then
+follow that app's README for permissions, keys, or optional integrations:
 
 | Need | Why | Install |
 |---|---|---|
 | **macOS 13 or later** | supported baseline for the base utilities | System Settings → General → Software Update |
 | **[Hammerspoon](https://www.hammerspoon.org) 1.1.1+** | app runtime | `brew install --cask hammerspoon` |
-| **git** | clones the repository | included with the Xcode Command Line Tools; run `xcode-select --install` if `git --version` is unavailable |
+| **Xcode Command Line Tools** | `git` to clone the repository, `swiftc` to build the settings tool behind Caps+K's Settings tab, and `/usr/bin/python3` for Unsub | `xcode-select --install` if `git --version` is unavailable |
+| **Apple Mail** (Unsub only) | Unsub acts on the message selected in Mail | included with macOS |
 
 ## Additional requirements for the full suite
 
@@ -64,12 +65,13 @@ Fix the toolchain, run `~/.hammerspoon/murmur/hs-dictate/build.sh`, then re-run
 | Need | Why | Install |
 |---|---|---|
 | **[Raycast](https://raycast.com)** | Reap's dropdown UI; Relay's optional deeplink | `brew install --cask raycast` |
-| **[OpenAI key](https://platform.openai.com/api-keys)** | Hone manual refinement and optional Murmur cleanup | store with `apps/hone/setup-keys.sh` |
+| **[OpenAI key](https://platform.openai.com/api-keys)** | Hone manual refinement, optional Murmur cleanup, and Unsub's optional judging of unsubscribe pages | store with `apps/hone/setup-keys.sh` |
 | **[Groq key](https://console.groq.com/keys)** | optional Murmur cleanup provider | store with `apps/hone/setup-keys.sh` |
 | **[Cerebras key](https://cloud.cerebras.ai/)** | optional Murmur cleanup provider | store with `apps/hone/setup-keys.sh` |
 
 Murmur works without a key and can stay fully local; Hone's manual refinement
-requires an OpenAI key. Loadout does not use API-key environment variables or an
+requires an OpenAI key. Unsub works without a key, using simple heuristics on
+unsubscribe pages. Loadout does not use API-key environment variables or an
 `.env` file. Keys live in macOS Keychain. Provider billing, retention, and usage
 policies apply to the text sent to them.
 

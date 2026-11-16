@@ -52,6 +52,7 @@ if ! "${ROOT}/apps/murmur/install.sh"; then
   echo "WARNING: Murmur is linked but its daemon did not build; continuing with the other apps." >&2
 fi
 "${ROOT}/apps/relay/install.sh"
+"${ROOT}/apps/unsub/install.sh"
 "${ROOT}/apps/palette/install.sh"
 "${ROOT}/apps/reap/install.sh"
 
@@ -92,7 +93,8 @@ ld_reload_hint
 cat <<EOF
 
 == Almost there — a few steps only you can do ==
-1. Optional API keys (Hone refine + Murmur's cloud cleanup; see privacy notes):
+1. Optional API keys (Hone, Murmur's cloud cleanup, Unsub's page judging;
+   see each app's privacy notes):
      ${ROOT}/apps/hone/setup-keys.sh
 2. Launch Hammerspoon, then grant macOS permissions:
      open -a Hammerspoon

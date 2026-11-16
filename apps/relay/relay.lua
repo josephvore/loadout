@@ -59,6 +59,11 @@ local config = {
 ----------------------------------------------------------------
 
 -- Split a path into its directory component (everything before the last "/").
+-- Single-quote a string for /bin/sh (Lua's %q is not shell quoting).
+local function shq(v) return "'" .. tostring(v):gsub("'", "'\\''") .. "'" end
+-- Escape a string for an AppleScript "…" literal.
+local function asq(v) return (tostring(v):gsub('\\', '\\\\'):gsub('"', '\\"')) end
+
 local function dirname(path)
   return (path:match("^(.*)/[^/]*$"))
 end
@@ -66,7 +71,7 @@ end
 -- Best-effort recursive mkdir using os.execute (works under plain Lua and HS).
 local function ensureDir(dir)
   if not dir or dir == "" then return end
-  os.execute(string.format("mkdir -p %q", dir))
+  os.execute("mkdir -p " .. shq(dir))
 end
 
 -- Append `text` to `filePath` as a timestamped markdown task bullet under a
@@ -165,7 +170,7 @@ local function resolveClaudeRepo()
   local ok, result = hs.osascript.applescript(script)
   if ok and result and result ~= "" then
     -- result is the session cwd; ask git for its toplevel.
-    local cmd = string.format("cd %q && git rev-parse --show-toplevel 2>/dev/null", result)
+    local cmd = "cd " .. shq(result) .. " && git rev-parse --show-toplevel 2>/dev/null"
     local out = hs.execute(cmd, true) -- true = run in a login shell so git is on PATH
     if out then
       out = out:gsub("%s+$", "")
@@ -184,18 +189,17 @@ function M.voiceClaudeCode()
     command = command .. " --dangerously-skip-permissions"
   end
   log.info("launching voice claude code", { repo = repo, command = command })
-  -- Escape double quotes for safe embedding inside the AppleScript string.
-  local repoEsc = repo:gsub('"', '\\"')
-  local cmdEsc = command:gsub('"', '\\"')
+  -- Shell-quote the repo path, then escape the whole line for AppleScript.
+  local line = asq("cd " .. shq(repo) .. " && " .. command)
   local script = string.format([[
     tell application "iTerm"
       create window with default profile
       tell current session of current window
-        write text "cd \"%s\" && %s"
+        write text "%s"
       end tell
       activate
     end tell
-  ]], repoEsc, cmdEsc)
+  ]], line)
   local ok, _, raw = hs.osascript.applescript(script)
   if not ok then
     log.error("iterm launch failed", { error = raw })
@@ -229,7 +233,7 @@ end
 function M.startWispr()
   if config.wisprDeeplink and config.wisprDeeplink ~= "" then
     log.info("starting wispr", { deeplink = config.wisprDeeplink })
-    hs.execute(string.format("open %q", config.wisprDeeplink))
+    hs.execute("open " .. shq(config.wisprDeeplink))
   else
     log.warn("wispr deeplink missing")
     hs.alert.show(

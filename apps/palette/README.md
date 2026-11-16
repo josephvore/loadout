@@ -10,7 +10,7 @@ keys. One window, every binding, live.
 ## What it does
 
 Palette is the Loadout suite's aggregator. It knows the shortcuts of every
-installed Loadout app — QuickShots, Murmur, Hone, Relay, and itself — and reads
+installed Loadout app — QuickShots, Murmur, Hone, Relay, Unsub, and itself — and reads
 their live bindings straight from each module's config. Every row shows the key,
 what it does, and where it comes from.
 
@@ -18,7 +18,10 @@ what it does, and where it comes from.
 - **Rebind** waits for you to press a new combo and captures it.
 - **Reset** drops back to the app's default binding.
 
-Only apps you've actually installed show up.
+Only apps you've actually installed show up. Private modules of your own can
+be added from `~/.hammerspoon/loadout.local.lua` with
+`require("palette").addApp(...)`; see
+[private apps](../../SETUP.md#private-apps).
 
 ## Configuring apps
 
@@ -30,16 +33,20 @@ group: toggles, numbers (with units), text, prompts, and lists. Search finds
 settings too. Edit in place, then press ⌘S. Saving reloads Hammerspoon and
 reopens the window on that app.
 
-Option edits are stored in `hs.settings` (`palette.config.v1`) and applied
-before the apps start, the same way rebinds are. Your `.lua` files are never
-rewritten. A changed option shows an orange dot; ⌘⌫ (or right-click) puts it
-back to the file's default. Nested provider tables and similar structures
-aren't shown; change those in the app's `.lua`.
+**General** values are saved to `~/.hammerspoon/settings/<app>.json` through
+the settings tool in `lib/settings/` (see [settings](../../settings/README.md)).
+**Advanced** option edits are stored in `hs.settings` (`palette.config.v1`) and
+applied before the apps start, the same way rebinds are. Your `.lua` files are
+never rewritten. A changed option shows an orange dot; ⌘⌫ (or right-click) puts
+it back to the file's default. Nested provider tables and similar structures
+aren't shown; set those in `~/.hammerspoon/loadout.local.lua` (see
+[local configuration](../../SETUP.md#local-configuration)).
 
 Keys: ↑↓ select · ↵ run or edit · ⌘R change key · ⌘O Shortcuts/Settings ·
 ⌘S save · ⌘⌫ reset · esc close. Right-click any row for the same actions.
 The window can be resized from its edges or the bottom-right corner, and the
-green button (or a double-click on the top bar) expands it. It remembers its size.
+green button (or a double-click on the top bar) expands it; the red button
+closes it. It remembers its size.
 
 ## How rebinding works
 
@@ -60,10 +67,14 @@ Caps/F18 tap. If that tap isn't active, Palette falls back to
 - macOS 13 or later with [Hammerspoon](https://www.hammerspoon.org) 1.1.1 or later.
 - Accessibility permission for Hammerspoon.
 - QuickShots is optional; without it Palette uses the fallback hotkey above.
+- The Swift compiler from the Xcode Command Line Tools, to build the settings
+  tool. Without it, **General** settings can't be saved (Advanced options
+  still work).
 
 Palette reads only the standard `$HOME` path through Hammerspoon. It has no
 project-specific environment variables, `.env` file, API keys, account, model
-download, or network request; bindings remain in local `hs.settings` storage.
+download, or network request; bindings and settings stay in local
+`hs.settings` storage and `~/.hammerspoon/settings/`.
 
 ## Install
 
@@ -74,8 +85,9 @@ apps/palette/install.sh
 open -a Hammerspoon
 ```
 
-The installer links `palette.lua` into `~/.hammerspoon/` and wires it into your
-config. Reload Hammerspoon afterward, then press Caps+K.
+The installer links `palette.lua` into `~/.hammerspoon/` and builds the shared
+settings tool (`lib/settings/loadout-settings`). Reload Hammerspoon afterward,
+then press Caps+K.
 Keep the clone at this path because it is the live symlink target.
 
 ## Permissions

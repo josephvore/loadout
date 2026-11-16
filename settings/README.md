@@ -1,59 +1,65 @@
 # Loadout Settings
 
-One native settings window for every Loadout app, driven by per-app schemas.
-Open from ✦ → Settings → <app>, or `loadout-settings <app>` in a terminal.
+Per-app settings schemas. Palette (Caps+K) renders each one as the **Settings**
+tab of that app's page, so you edit settings in place and press ⌘S.
 
 ## How it works
 
-- **`~/loadout/lib/settings/loadout-settings`** — a single schema-driven
-  AppKit binary (source + build.sh beside it). Renders whatever fields the
-  schema declares: string, int, bool, enum, folder (with Browse…), plus an
-  optional recent-outputs section.
-- **`<app>.schema.json`** (this dir) — declares the app's editable fields,
-  where values live, and what to run after save.
-- Two backends:
-  - `"format": "json"` — writes `<app>.settings.json` (this dir), an
-    **overlay** merged over the app's in-file Lua defaults at start by
-    `settings_overlay.lua` (one `pcall` line in each app's `start()`). Only
-    keys that already exist in the app's config are applied; no overlay file
-    means pure defaults. `postSave` reloads Hammerspoon so changes apply.
-  - `"format": "shell"` — rewrites `KEY=VALUE` lines in a conf file (snag's
-    `snag.conf`), preserving comments and unknown lines. No reload needed.
+- **`<app>.schema.json`** (this dir) — declares the app's editable fields
+  (string, int, bool, enum, or folder), where saved values live, and what to
+  run after a save.
+- **`lib/settings/loadout-settings`** — a schema-driven helper that reads and
+  writes those values. Palette's installer builds it from the Swift source
+  beside it (needs the Xcode Command Line Tools); without it, Caps+K can't
+  save these settings. Run on its own, it opens a small native settings
+  window for one app.
+- **`lib/settings_overlay/settings_overlay.lua`** — linked into
+  `~/.hammerspoon` by every app installer. Each app calls it at the top of
+  `start()` to merge saved values over its in-file defaults.
+
+Saved values live outside the clone, in `~/.hammerspoon/settings/<app>.json`.
+Only keys that already exist in the app's `config`, with a value of the same
+type, are applied. No file means pure defaults. Saving from Caps+K reloads
+Hammerspoon so changes apply.
+
+A schema can also use `"format": "shell"` to rewrite `KEY=VALUE` lines in a
+conf file, preserving comments and unknown lines.
+
+Other options in an app's `config` table (Caps+K's **Advanced** group) and key
+bindings are stored separately in Hammerspoon's `hs.settings`, not here.
 
 ## Headless use
 
+From the clone:
+
 ```sh
-loadout-settings murmur --dump                 # print resolved values
-loadout-settings murmur --set stopGraceMs=200  # write + postSave
-loadout-settings murmur --set ... --no-post-save
+lib/settings/loadout-settings murmur --dump                 # print resolved values
+lib/settings/loadout-settings murmur --set stopGraceMs=200  # write + postSave
+lib/settings/loadout-settings murmur --set ... --no-post-save
 ```
 
 ## Adding an app
 
-1. Drop `<app>.schema.json` here (copy an existing one).
-2. json format: add the one-line overlay `pcall` at the top of the app's
-   `start()` (see murmur/hone/quickshots).
-3. Add a line to the ✦ SwiftBar plugin's Settings submenu.
+1. Drop `<app>.schema.json` here (copy an existing one) and point its
+   `target` at `~/.hammerspoon/settings/<app>.json`.
+2. Add the one-line overlay call at the top of the app's `start()`:
+   `pcall(function() require("settings_overlay").apply("<app>", config) end)`
+   (see Murmur, Hone, or Unsub).
+3. Make sure the app is in Palette's `APPS` list so its page shows the tab.
 
 ## Current apps
 
-- **snag** — output folder, pipeline mode, max recording, dry run (+ recent
-  outputs list). Shell backend → `snag.conf`.
-- **murmur** — Parakeet final-pass (off/v2/v3), streaming ASR
-  (off/eou160/eou320), punctuation, mic idle timeout, stop grace.
-- **hone (Refine)** — refine model, auto-refine model, reasoning effort,
-  restore-clipboard.
-- **quickshots** — screenshot folder, clipboard format, auto-paste,
+- **QuickShots** — screenshot folder, clipboard format, auto-paste,
   default last-N, retention days.
-- **relay** — quick-capture note, Claude command, skip-permissions,
+- **Murmur** — Parakeet final-pass (off/v2/v3), streaming ASR
+  (off/eou160/eou320), punctuation, mic idle timeout, stop grace.
+- **Hone** — refine model, auto-refine model, reasoning effort,
+  restore-clipboard.
+- **Relay** — quick-capture note, Claude command, skip-permissions,
   auto-start Wispr.
-- **unsub** — send vs. compose unsubscribe emails, AI on unsubscribe
+- **Unsub** — send vs. compose unsubscribe emails, AI on unsubscribe
   pages, AI model.
 
-Palette (Caps+K) renders every schema here as an inline settings page per
-app, so most of these can be changed without opening this window.
-
-Note on overlays: the overlay stores every schema field on save, so it
-*pins* those values — later edits to an app's in-file defaults won't show
-through until the overlay is deleted (or re-saved). Palette's hotkey
-rebinding is separate and stays in Palette (Caps+K).
+Note on overlays: saving stores only the fields you changed from the schema
+default; untouched fields keep following the app's own config. Delete
+`~/.hammerspoon/settings/<app>.json` to reset an app.

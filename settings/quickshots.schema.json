@@ -2,8 +2,8 @@
   "app": "quickshots",
   "title": "QuickShots — Screenshots",
   "format": "json",
-  "target": "~/loadout/settings/quickshots.settings.json",
-  "postSave": ["/opt/homebrew/bin/hs", "-c", "hs.reload()"],
+  "target": "~/.hammerspoon/settings/quickshots.json",
+  "postSave": ["/bin/zsh", "-lc", "hs -c 'hs.reload()'"],
   "fields": [
     {"key": "saveDir", "label": "Screenshot folder", "type": "folder", "default": "~/Pictures/QuickShots"},
     {"key": "pasteMode", "label": "Clipboard format", "type": "enum", "options": ["paths", "quoted", "markdown", "files", "images", "codex"], "default": "paths", "help": "What lands on the clipboard after a capture"},

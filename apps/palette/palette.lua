@@ -12,9 +12,9 @@
 -- Three kinds of persisted customisation, all edited in this window:
 --   • Key bindings — stored in hs.settings (palette.overrides.v1) and applied
 --     to each module's config table before modules bind (applyOverrides()).
---   • App settings — the per-app schemas in ~/loadout/settings/<app>.schema.json,
+--   • App settings — the per-app schemas in <repo>/settings/<app>.schema.json,
 --     read/written through lib/settings/loadout-settings (json overlays merged
---     by settings_overlay.lua, or snag's shell conf). Saving a json app reloads
+--     by settings_overlay.lua, or a shell conf). Saving a json app reloads
 --     Hammerspoon and reopens this window on that app.
 --   • Every other option in an app's `config` table (numbers, toggles, text,
 --     lists) — stored in hs.settings (palette.config.v1) and applied in
@@ -32,8 +32,19 @@ local HOME = os.getenv("HOME") or ""
 local OVERRIDES_KEY = "palette.overrides.v1"
 local CONFIG_KEY = "palette.config.v1"
 local REOPEN_KEY = "palette.reopenAfterReload"
-local SETTINGS_DIR = HOME .. "/loadout/settings"
-local SETTINGS_BIN = HOME .. "/loadout/lib/settings/loadout-settings"
+-- The checkout is wherever palette.lua really lives (~/.hammerspoon/palette.lua
+-- is a symlink into apps/palette/), so the repo can be cloned anywhere.
+local function repoRoot()
+  local src = debug.getinfo(1, "S").source:match("^@(.+)$") or ""
+  local real = hs.fs.pathToAbsolute(src) or src
+  return real:match("^(.*)/apps/palette/[^/]+$") or (HOME .. "/loadout")
+end
+local ROOT = repoRoot()
+local SETTINGS_DIR = ROOT .. "/settings"
+local SETTINGS_BIN = ROOT .. "/lib/settings/loadout-settings"
+
+-- Single-quote a string for /bin/sh.
+local function shq(s) return "'" .. tostring(s):gsub("'", "'\\''") .. "'" end
 
 ----------------------------------------------------------------
 -- CONFIG
@@ -53,7 +64,6 @@ local APPS = {
   { id = "murmur",     name = "Dictation",    product = "Murmur" },
   { id = "hone",       name = "AI Text",      product = "Hone" },
   { id = "relay",      name = "Launchers",    product = "Relay" },
-  { id = "snag",       name = "Bug Capture",  product = "Snag" },
   { id = "unsub",      name = "Unsubscribe",  product = "Unsub" },
   { id = "palette",    name = "This Window",  product = "Palette" },
 }
@@ -150,16 +160,6 @@ local REGISTRY = {
     label = "Chrome search",
     desc  = "Focuses Chrome and opens a new tab ready to search",
     run   = function(m) m.chromeSearch() end },
-
-  -- Snag
-  { id = "snag.record", module = "snag", path = { "capsRecord" }, kind = "caps",
-    label = "Record a bug",
-    desc  = "Record a region while narrating; files a verified EquipFlow GitHub issue. Again to stop",
-    run   = function(m) m.record() end },
-  { id = "snag.cancel", module = "snag", path = { "capsCancel" }, kind = "caps",
-    label = "Discard bug recording",
-    desc  = "Stops the current recording and throws it away",
-    run   = function(m) m.cancel() end },
 
   -- Unsub
   { id = "unsub.unsubscribe", module = "unsub", path = { "capsUnsub" }, kind = "caps",
@@ -274,7 +274,7 @@ local function loadSchema(appId)
 end
 
 local function dumpValues(appId)
-  local out, ok = hs.execute(string.format("%q %q --dump 2>/dev/null", SETTINGS_BIN, appId))
+  local out, ok = hs.execute(shq(SETTINGS_BIN) .. " " .. shq(appId) .. " --dump 2>/dev/null")
   local values = {}
   if ok and out then
     for line in out:gmatch("[^\n]+") do
@@ -306,7 +306,7 @@ local function realPath(path)
 end
 
 local function moduleFile(appId)
-  return realPath(HOME .. "/.hammerspoon/" .. appId .. ".lua")
+  return realPath(hs.configdir .. "/" .. appId .. ".lua")
 end
 
 ----------------------------------------------------------------
@@ -537,7 +537,7 @@ function M.buildData()
     if #rows > 0 or loaded then
       apps[#apps + 1] = {
         id = a.id, name = a.name, product = a.product,
-        file = (moduleFile(a.id):gsub("^" .. HOME, "~")),
+        file = (moduleFile(a.id):gsub("^" .. HOME:gsub("%p", "%%%0"), "~")),
         rows = rows,
         settings = settingsFor(a.id),
         options = optionsFor(a.id),
@@ -1562,8 +1562,18 @@ function M.start()
   log.info("started")
 end
 
+-- Add a private app and its shortcuts (call from ~/.hammerspoon/loadout.local.lua):
+--   require("palette").addApp({ id = "myapp", name = "Does X", product = "MyApp" },
+--     { { id = "myapp.go", module = "myapp", path = { "capsGo" }, kind = "caps",
+--         label = "Do X", desc = "…", run = function(m) m.go() end } })
+function M.addApp(app, entries)
+  assert(type(app) == "table" and type(app.id) == "string", "addApp: app.id required")
+  for _, a in ipairs(APPS) do if a.id == app.id then return end end
+  table.insert(APPS, #APPS, app) -- keep "This Window" last
+  for _, e in ipairs(entries or {}) do REGISTRY[#REGISTRY + 1] = e end
+end
+
 M.config = config
 M.buildHTML = buildHTML -- for previewing the window outside Hammerspoon
-function M.evalJS(code, cb) if webview then webview:evaluateJavaScript(code, cb) end end -- debugging
 
 return M

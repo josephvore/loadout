@@ -262,10 +262,13 @@ local config = {
 
   -- Nightly self-eval: replay the day's archived takes through the live
   -- polish + validator, LLM-judge the pasted output, aggregate cap-miss /
-  -- 429 / rejection rates, and write a report + auto regression fixtures.
-  selfEval = true,
+  -- 429 / rejection rates, and write a report + private regression fixtures
+  -- (in MURMUR_DIR). Off by default: it sends the day's transcripts to your
+  -- cleanup provider. Enable with selfEval = true in loadout.local.lua.
+  selfEval = false,
   selfEvalTime = "03:30",
-  selfEvalLua = "/opt/homebrew/bin/lua",
+  selfEvalLua = (hs and hs.fs.attributes("/opt/homebrew/bin/lua")) and "/opt/homebrew/bin/lua"
+    or "/usr/local/bin/lua",
   selfEvalDir = MURMUR_DIR .. "/self_eval",
 
   -- Insert a leading space when dictating right after existing text, so
@@ -3096,7 +3099,7 @@ function M.selfEval(date)
 end
 
 function M.start()
-  -- ✦ Settings window overlay (loadout-settings) wins over file defaults.
+  -- Saved settings (Caps+K → Settings, via settings_overlay) win over file defaults.
   pcall(function() require("settings_overlay").apply("murmur", config) end)
   -- Caps+M through QuickShots' shared Caps tap is the trigger. If that tap
   -- isn't available and no modifier trigger is configured, fall back to

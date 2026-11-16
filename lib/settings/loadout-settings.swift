@@ -1,7 +1,7 @@
 // loadout-settings — one native settings window for every Loadout app,
-// driven by per-app schemas in ~/loadout/settings/<app>.schema.json.
+// driven by per-app schemas in <repo>/settings/<app>.schema.json.
 // Backends: "json" writes a settings overlay (merged by settings_overlay.lua
-// at app start) — "shell" rewrites KEY=VALUE lines in a conf file (snag).
+// at app start) — "shell" rewrites KEY=VALUE lines in a conf file.
 //
 //   loadout-settings <app>                     open the settings window
 //   loadout-settings <app> --dump              print resolved values
@@ -42,8 +42,17 @@ struct Schema: Decodable {
     let fields: [Field]
 }
 
+// Schemas live in <repo>/settings; this binary is built into <repo>/lib/settings,
+// so the checkout can be anywhere. LOADOUT_ROOT overrides for unusual layouts.
+func repoRoot() -> String {
+    if let r = ProcessInfo.processInfo.environment["LOADOUT_ROOT"], !r.isEmpty { return expand(r) }
+    let exe = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
+    return exe.deletingLastPathComponent().deletingLastPathComponent()
+        .deletingLastPathComponent().path
+}
+
 func loadSchema(_ app: String) -> Schema {
-    let url = URL(fileURLWithPath: expand("~/loadout/settings/\(app).schema.json"))
+    let url = URL(fileURLWithPath: repoRoot() + "/settings/\(app).schema.json")
     guard let data = try? Data(contentsOf: url),
           let schema = try? JSONDecoder().decode(Schema.self, from: data) else {
         FileHandle.standardError.write("no schema for '\(app)' at \(url.path)\n".data(using: .utf8)!)
@@ -79,7 +88,7 @@ func readValues(_ schema: Schema) -> [String: String] {
             guard let eq = t.firstIndex(of: "=") else { continue }
             let key = String(t[..<eq])
             guard schema.fields.contains(where: { $0.key == key }) else { continue }
-            var val = String(t[t.index(after: eq)...])
+            var val = shellUnquote(String(t[t.index(after: eq)...]))
             if let f = schema.fields.first(where: { $0.key == key }), f.type == "bool" {
                 val = (val == "1" || val == "true") ? "true" : "false"
             }
@@ -89,12 +98,32 @@ func readValues(_ schema: Schema) -> [String: String] {
     return vals
 }
 
+// Shell-format targets are sourced by sh, so quote anything beyond a plain
+// word; plain values stay bare so simple `sed`/grep readers keep working.
+func shellQuote(_ s: String) -> String {
+    let safe = CharacterSet(charactersIn:
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-./:@%+,")
+    if s.unicodeScalars.allSatisfy({ safe.contains($0) }) { return s }
+    return "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+}
+
+func shellUnquote(_ s: String) -> String {
+    guard s.count >= 2, s.hasPrefix("'"), s.hasSuffix("'") else { return s }
+    return String(s.dropFirst().dropLast()).replacingOccurrences(of: "'\\''", with: "'")
+}
+
 func writeValues(_ schema: Schema, _ vals: [String: String]) throws {
     let target = expand(schema.target)
+    try FileManager.default.createDirectory(
+        atPath: (target as NSString).deletingLastPathComponent,
+        withIntermediateDirectories: true)
     if schema.format == "json" {
         var obj: [String: Any] = [:]
+        // Store only values that differ from the schema default, so untouched
+        // fields keep following the app's own config (and loadout.local.lua).
         for f in schema.fields {
             let s = vals[f.key] ?? f.def
+            if s == f.def { continue }
             switch f.type {
             case "bool": obj[f.key] = (s == "true")
             case "int":  obj[f.key] = Int(s) ?? 0
@@ -111,7 +140,7 @@ func writeValues(_ schema: Schema, _ vals: [String: String]) throws {
         for f in schema.fields {
             var s = vals[f.key] ?? f.def
             if f.type == "bool" { s = (s == "true") ? "1" : "0" }
-            let newLine = "\(f.key)=\(s)"
+            let newLine = "\(f.key)=\(shellQuote(s))"
             if let i = lines.firstIndex(where: { $0.hasPrefix("\(f.key)=") }) {
                 lines[i] = newLine
             } else {

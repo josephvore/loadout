@@ -2,8 +2,8 @@
   "app": "hone",
   "title": "Refine (Hone) — AI Text",
   "format": "json",
-  "target": "~/loadout/settings/hone.settings.json",
-  "postSave": ["/opt/homebrew/bin/hs", "-c", "hs.reload()"],
+  "target": "~/.hammerspoon/settings/hone.json",
+  "postSave": ["/bin/zsh", "-lc", "hs -c 'hs.reload()'"],
   "fields": [
     {"key": "model", "label": "Refine model", "type": "string", "default": "gpt-5.4"},
     {"key": "autoRefineModel", "label": "Auto-refine model", "type": "string", "default": "gpt-5.4-nano"},

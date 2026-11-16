@@ -27,6 +27,7 @@ import email
 import email.policy
 import html
 import http.cookiejar
+import ipaddress
 import json
 import re
 import subprocess
@@ -221,7 +222,12 @@ def find_body_link(msg):
 def parse_mailto(uri):
     rest = uri[len("mailto:"):]
     addr, _, query = rest.partition("?")
-    params = {k.lower(): v[0] for k, v in urllib.parse.parse_qs(query).items()}
+    # RFC 6068: mailto uses percent-encoding only; "+" is a literal plus.
+    params = {}
+    for pair in query.split("&"):
+        k, _, v = pair.partition("=")
+        if k:
+            params.setdefault(urllib.parse.unquote(k).lower(), urllib.parse.unquote(v))
     return (urllib.parse.unquote(addr), params.get("subject", "unsubscribe"),
             params.get("body", "unsubscribe"))
 
@@ -254,6 +260,23 @@ def http_request(url, data=None, method=None, extra_headers=None):
     except urllib.error.HTTPError as e:
         raw = e.read(500_000) if hasattr(e, "read") else b""
         return e.code, url, raw.decode("utf-8", "replace")
+    except (urllib.error.URLError, OSError) as e:  # DNS, refused, timeout, TLS
+        log("network error", host(url), repr(e)[:120])
+        return 0, url, ""
+
+
+def safe_to_fetch(url):
+    """Only auto-fetch public https pages; never plain http or local hosts."""
+    parts = urllib.parse.urlparse(url)
+    name = (parts.hostname or "").lower()
+    if parts.scheme != "https" or not name or "." not in name:
+        return False
+    if name == "localhost" or name.endswith((".local", ".localhost", ".internal", ".lan")):
+        return False
+    try:
+        return ipaddress.ip_address(name).is_global
+    except ValueError:
+        return True  # a DNS name
 
 
 class PageParser(HTMLParser):
@@ -520,6 +543,8 @@ def web_unsubscribe(url, sender, user_addr, method_label, use_ai=True):
     key = openai_key() if use_ai else None
     status, final_url, body = http_request(url)
     log("GET", status, host(final_url))
+    if status == 0:
+        finish(False, sender, method_label, f"Couldn't reach {host(url)}. Opening the page", url)
     if status >= 400:
         finish(False, sender, method_label, f"{host(url)} returned {status}. Opening the page", url)
     for step in range(MAX_STEPS):
@@ -606,6 +631,10 @@ def main():
     # 3. Web page (header link, else body link)
     url, label = (https, "web") if https else (find_body_link(msg), "body link")
     if url:
+        if not safe_to_fetch(url):
+            if dry:
+                finish(True, sender, label, f"DRY RUN: open {host(url)} in the browser ({label})")
+            finish(False, sender, label, f"Not fetching {host(url)} automatically. Opening the page", url)
         if dry:
             finish(True, sender, label, f"DRY RUN: open and complete {host(url)} ({label})")
         web_unsubscribe(url, sender, user_addr, label, use_ai)

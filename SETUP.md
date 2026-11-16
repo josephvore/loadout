@@ -37,9 +37,12 @@ your API keys, or remap your keyboard without your say-so.
    ./bootstrap.sh                 # add --with-shell to also link the zsh config
    ```
    This links every app into `~/.hammerspoon`, copies Murmur's example data,
-   builds the dictation daemon, and clones + wires in QuickShots. It's idempotent
-   and backs up anything it replaces. Keep the clone: its files are the symlink
-   targets. A Murmur build failure returns exit 1 after the other apps install.
+   builds the dictation daemon and the shared settings tool, and clones + wires
+   in QuickShots. It's idempotent
+   and backs up anything it replaces. `~/loadout` is only the documented
+   default; clone anywhere, but keep the clone where it is afterward, because
+   its files are the symlink targets. A Murmur build failure returns exit 1
+   after the other apps install.
 3. **Run the tests** (optional sanity check):
    ```sh
    ./test.sh
@@ -47,12 +50,13 @@ your API keys, or remap your keyboard without your say-so.
 
 ## Human-only
 
-1. **Add API keys** (for Hone refinement + Murmur's optional cleanup pass):
+1. **Add API keys** (for Hone refinement, Murmur's optional cleanup pass, and
+   Unsub's optional page judging):
    ```sh
    apps/hone/setup-keys.sh
    ```
    Create an [OpenAI key](https://platform.openai.com/api-keys) for Hone's manual
-   refinement hotkeys. Optionally add [Groq](https://console.groq.com/keys) or
+   refinement hotkeys; Unsub uses the same key. Optionally add [Groq](https://console.groq.com/keys) or
    [Cerebras](https://cloud.cerebras.ai/) for Murmur's cleanup path. macOS
    `security` prompts invisibly and stores them in Keychain. No `.env` file or
    API-key environment variable is used. Provider billing and data policies
@@ -70,6 +74,7 @@ your API keys, or remap your keyboard without your say-so.
    - **Accessibility** — hotkeys, pasting, and reading selection/context.
    - **Screen Recording** — QuickShots captures.
    - **Microphone** — Murmur dictation.
+   - **Automation → Mail** — Unsub; macOS asks the first time you press Caps+U.
    Then reload Hammerspoon (menu-bar icon → Reload Config).
 3. **Remap Caps Lock to a modifier** (powers Caps+A, Caps+K, Caps+C, …):
    ```sh
@@ -88,10 +93,13 @@ your API keys, or remap your keyboard without your say-so.
 - Menu bar shows the Hammerspoon icon; **Caps+K** opens the Palette menu listing
   every installed app's shortcuts.
 - **Caps+A** starts a QuickShots drag-capture.
-- Hold **Right-Command** and speak — Murmur transcribes and pastes on release.
-  The first use downloads about 600 MB of speech models; keep at least 2 GB free
-  for models and build caches.
+- Hold **Caps+M** and speak — Murmur transcribes and pastes when you release
+  Caps (tap Caps+M for hands-free; Right-Command is the fallback if the Caps
+  tap is unavailable). The first use downloads about 600 MB of speech models;
+  keep at least 2 GB free for models and build caches.
 - **Caps+C** refines the clipboard via Hone.
+- Select a newsletter in Apple Mail and run `open -g "hammerspoon://unsub"` —
+  Unsub reports, without acting, how it would unsubscribe.
 
 If an app doesn't load, open the Hammerspoon Console or check
 `~/.hammerspoon/logs/init.log` — each app logs whether it loaded.
@@ -116,6 +124,33 @@ murmur.contentHint = "default" -- "far-field" for a distant microphone
 Only configure apps you installed. API keys belong in the macOS Keychain via
 `apps/hone/setup-keys.sh`, not in Lua files. Edit vocabulary and snippets in
 `~/.hammerspoon/murmur/`; the repository's data files are generic examples.
+
+Most options can also be changed in Caps+K → an app → **Settings**, which
+saves them to `~/.hammerspoon/settings/<app>.json` (the main options) or
+Hammerspoon's `hs.settings` (the **Advanced** options and key bindings).
+Values saved there are applied after this file runs, so they win for the same
+key; only values you changed from their defaults are saved. Don't edit the
+`.lua` files linked into `~/.hammerspoon`: they are your git checkout.
+
+### Private apps
+
+The same file can start modules of your own and list their shortcuts in
+Caps+K. Put `myapp.lua` (a module with a `start()` function and a `config`
+table) in `~/.hammerspoon`, then:
+
+```lua
+require("palette").addApp(
+  { id = "myapp", name = "Does X", product = "MyApp" },
+  { { id = "myapp.go", module = "myapp", path = { "capsGo" }, kind = "caps",
+      label = "Do X", desc = "Runs MyApp's main action",
+      run = function(m) m.go() end } })
+
+return { apps = { "myapp" } } -- started after the built-in apps
+```
+
+`path` points at the `{ mods, key }` binding in `myapp`'s `config`, so Caps+K
+shows its live key and can rebind it. Keep the `return` as the file's last
+statement.
 
 For shell settings, use `~/.zshrc.local`, `~/.zprofile.local`, and a private
 `~/.zshenv` (see [shell setup](shell/README.md)). These local filenames are

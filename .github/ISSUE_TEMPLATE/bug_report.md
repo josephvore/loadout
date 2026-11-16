@@ -4,7 +4,7 @@ about: Something isn't working
 labels: bug
 ---
 
-**App**: (QuickShots / Murmur / Hone / Relay / Palette / Reap / bootstrap / shell)
+**App**: (QuickShots / Murmur / Hone / Relay / Unsub / Palette / Reap / bootstrap / shell)
 
 **What happened**
 A clear description of the bug and what you expected instead.

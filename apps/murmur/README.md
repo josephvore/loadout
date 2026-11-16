@@ -6,8 +6,9 @@ MacWhisper.
 
 Hold a key, speak, release — the transcript lands in whatever app has focus.
 Capture and transcription run entirely on your Mac. After the one-time package
-and model downloads, only optional cleanup can send runtime data over the
-network (see [On-device vs. cloud](#on-device-vs-cloud)).
+and model downloads, only optional cleanup (and the opt-in nightly self-eval)
+can send runtime data over the network (see
+[On-device vs. cloud](#on-device-vs-cloud)).
 
 ## How it works
 
@@ -84,9 +85,11 @@ pasted raw, it is still kept — an alert offers Caps+R to swap.
 
 Caps+M binds into QuickShots' shared Caps (F18) tap: Caps+M starts the take and
 letting go of Caps ends it. A short Caps+M tap counts as hands-free; holding
-Caps is push-to-talk. Rebind it from Palette (Caps+K). Set `capsTrigger = false`
-and `trigger = { {}, "rightcmd" }` in `murmur.lua` to use a bare modifier key
-instead; Murmur falls back to Right ⌘ on its own if the Caps tap is unavailable.
+Caps is push-to-talk. Rebind it from Palette (Caps+K). To use a bare modifier
+key instead, set `capsTrigger = false` and `trigger = { {}, "rightcmd" }` on
+`require("murmur").config` in
+[`loadout.local.lua`](../../SETUP.md#local-configuration); Murmur falls back to
+Right ⌘ on its own if the Caps tap is unavailable.
 With a modifier trigger, pressing any other key while it is down means you were
 typing a normal shortcut, so dictation silently cancels and the shortcut goes
 through untouched.
@@ -108,6 +111,10 @@ local while keeping Hone available for its manual hotkeys.
 To keep transcript data local, use the **Literal** profile or disable AI
 cleanup. No transcript, context, or audio is sent in that mode; the initial
 Swift dependency and speech-model downloads still require the network.
+
+The [nightly self-eval](#self-improvement-loop) is off by default. If you
+enable it, it sends the day's archived transcripts to your cleanup provider
+for judging.
 
 ### Cleanup profiles
 
@@ -160,9 +167,11 @@ into the focused app.
 
 ## Configuration
 
-Murmur uses your system microphone. Set device preferences and other overrides
-in `~/.hammerspoon/loadout.local.lua`, not the linked module; see
-[local configuration](../../SETUP.md#local-configuration).
+Murmur uses your system microphone. Change the main options in Caps+K →
+Dictation → Settings; saved values live in `~/.hammerspoon/settings/murmur.json`
+and `hs.settings`. Set device preferences and other overrides in
+`~/.hammerspoon/loadout.local.lua`, not the linked module (that file is your
+git checkout); see [local configuration](../../SETUP.md#local-configuration).
 
 ## Data files
 
@@ -173,7 +182,8 @@ Your personal dictation data lives in `~/.hammerspoon/murmur/`:
 - `dictation_snippets.tsv` — text expansions.
 - `takes.jsonl` — the take archive (raw/cleaned/pasted/polished per paste).
 - `dictation_edit_mined.tsv` — edit-mining counts (see below).
-- `self_eval/` — nightly self-eval reports.
+- `self_eval/` and `polish_cases_auto.lua` — self-eval reports and the
+  fixtures it collects (only if you enable self-eval).
 
 Murmur auto-learns frequently-seen proper nouns into the glossary so the
 recognizer stops mishearing them. These files are copied on install and are
@@ -194,16 +204,19 @@ Wispr Flow runs, built from three pieces:
    `dictation_corrections.tsv` (an alert announces it) so the whole
    pipeline stops making that mistake. Common words are filtered; edits
    outside the pasted region are ignored.
-3. **Nightly self-eval** (`tools/self_eval.lua`, scheduled via
-   `config.selfEval` at 03:30, or run on demand with
-   `hs -c "require('murmur').selfEval()"`) — replays the day's archived
+3. **Nightly self-eval** (`tools/self_eval.lua`; **off by default**) —
+   when enabled, it runs at 03:30, or on demand with
+   `hs -c "require('murmur').selfEval()"`. It replays the day's archived
    takes past an LLM judge (unresolved self-corrections, uncollapsed
    repeats, missing question marks, number formatting), re-runs judged-bad
    takes through the *current* prompt + validator to see whether today's
    pipeline would have done better, aggregates cap-miss / rejection / 429
    rates from the logs, writes a report to `self_eval/YYYY-MM-DD.md`, and
-   appends judged-bad takes to `tests/polish_cases_auto.lua` as regression
-   inputs. The result arrives as a notification.
+   appends judged-bad takes to `~/.hammerspoon/murmur/polish_cases_auto.lua`
+   as private regression inputs. The result arrives as a notification.
+   It sends the day's transcripts to your cleanup provider, so it stays off
+   until you set `require("murmur").config.selfEval = true` in
+   `loadout.local.lua`. It also needs Homebrew's `lua` (`brew install lua`).
 
 ### Voice commands and spoken punctuation
 
@@ -218,9 +231,9 @@ talking about one.
 
 For local troubleshooting, Murmur logs transcript samples of up to 320
 characters by default in `~/.hammerspoon/logs/murmur.log`. The log rotates at
-1 MB with four archives and never leaves the Mac. Set
-`logTranscriptSamples = false` in `murmur.lua` and reload Hammerspoon to omit
-transcript text from future logs.
+1 MB with four archives and never leaves the Mac. Turn off **Log transcript
+samples** in Caps+K → Dictation → Settings (or set `logTranscriptSamples =
+false` in `loadout.local.lua`) to omit transcript text from future logs.
 
 ## Tests
 

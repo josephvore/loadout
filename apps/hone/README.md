@@ -69,7 +69,8 @@ Keys are read from the macOS Keychain — one service name per provider:
 | Groq | [API keys](https://console.groq.com/keys) | `groq-api` |
 | Cerebras | [Cloud console](https://cloud.cerebras.ai/) | `cerebras-api` |
 
-No key is ever written to the repo. Run `apps/hone/setup-keys.sh` to store them;
+[Unsub](../unsub) reads the same `openai-refine` key for its optional page
+judging. No key is ever written to the repo. Run `apps/hone/setup-keys.sh` to store them;
 it uses the macOS `security` prompt, so keys never touch your shell history,
 process arguments, or any file. Re-run it any time to update a key.
 
@@ -86,7 +87,10 @@ System Settings → Privacy & Security → Accessibility, then reload Hammerspoo
 
 ## Configuration
 
-Set `require("hone").config` fields in your private
+The refine model, auto-refine model, reasoning effort, and clipboard restore
+are editable in Caps+K → AI Text → Settings (saved to
+`~/.hammerspoon/settings/hone.json`). For anything else, set
+`require("hone").config` fields in your private
 `~/.hammerspoon/loadout.local.lua` (see [local configuration](../../SETUP.md#local-configuration)):
 
 - **`vocabulary`** — a list of names, brands, and jargon the model is told to

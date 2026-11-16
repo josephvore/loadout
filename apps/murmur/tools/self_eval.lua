@@ -12,7 +12,8 @@
 --   * a replay of judged-bad takes through the CURRENT polish prompt +
 --     validator, to test whether today's pipeline would have done better;
 --   * a markdown report in <configdir>/murmur/self_eval/YYYY-MM-DD.md and
---     auto regression fixtures in tests/polish_cases_auto.lua.
+--     auto regression fixtures in <configdir>/murmur/polish_cases_auto.lua
+--     (your real takes — kept beside the archive, never in the repository).
 --
 -- Talks to the network and spends tokens; murmur.lua schedules it nightly
 -- (config.selfEval) and M.selfEval() runs it on demand. The last stdout
@@ -49,7 +50,7 @@ local MURMUR_DIR = hs.configdir .. "/murmur"
 local ARCHIVE = MURMUR_DIR .. "/takes.jsonl"
 local REPORT_DIR = MURMUR_DIR .. "/self_eval"
 local LOG_DIR = hs.configdir .. "/logs"
-local FIXTURES = root .. "/tests/polish_cases_auto.lua"
+local FIXTURES = MURMUR_DIR .. "/polish_cases_auto.lua"
 local JUDGE_CAP = tonumber(os.getenv("EVAL_TAKES") or "25")
 local REPLAY_CAP = 10
 local DELAY = tonumber(os.getenv("EVAL_DELAY") or "6")

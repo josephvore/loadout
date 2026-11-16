@@ -9,6 +9,7 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 ld_install_core "${DIR}/../.."
 ld_link "${DIR}/palette.lua" "${HAMMER_DIR}/palette.lua"
+ld_build_settings "${DIR}/../.."
 
 echo
 echo "Palette lists every Loadout shortcut it finds installed. Press Caps+K"
