@@ -1,12 +1,17 @@
 return {
   { name="short command", raw="open settings", expected="open settings" },
   { name="imperative", raw="Update the config file", expected="Update the config file" },
-  { name="question", raw="what time is it question mark", expected="what time is it?" },
-  { name="comma", raw="hello comma world", expected="hello, world" },
-  { name="semicolon", raw="first semicolon second", expected="first; second" },
-  { name="colon", raw="note colon urgent", expected="note: urgent" },
-  { name="exclamation", raw="ship it exclamation point", expected="ship it!" },
+  -- Bare spoken-punctuation words are content until the polish LLM decides
+  -- otherwise — the regex era turned "a question mark wasn't even added"
+  -- into "a? wasn't even added".
+  { name="question words kept", raw="what time is it question mark", expected="what time is it question mark" },
+  { name="comma words kept", raw="hello comma world", expected="hello comma world" },
+  { name="punctuation as content", raw="a question mark wasn't even added", expected="a question mark wasn't even added" },
+  { name="period as content", raw="during the free trial period we check in", expected="during the free trial period we check in" },
+  { name="colon as content", raw="the colon cancer screening", expected="the colon cancer screening" },
   { name="paragraph", raw="first new paragraph second", expected="first\n\nsecond" },
+  { name="paragraph as content", raw="we need a new paragraph about pricing", expected="we need a new paragraph about pricing" },
+  { name="bullet as content", raw="that bullet point is wrong", expected="that bullet point is wrong" },
   { name="line", raw="first new line second", expected="first\nsecond" },
   { name="bullet", raw="items new bullet one new bullet two", contains="\n- one\n- two" },
   { name="quotes", raw="open quote hello close quote", expected="\"hello\"" },

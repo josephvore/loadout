@@ -76,24 +76,36 @@ local config = {
   -- volatile partials (the ChatGPT/Groq-style live feel). The batch parakeet
   -- pass above still owns the final that gets pasted, so live text is snappy
   -- and the pasted text stays best-in-class. "eou160" = lowest latency (160ms
-  -- chunks); "eou320" = a little more accurate. First run downloads ~120MB to
+  -- chunks); "eou320" = noticeably more accurate (~5.7% vs ~8-9% WER) for one
+  -- extra chunk of latency — the better default now that the transcript panel
+  -- shows the whole take (eou160's homophone slips like "lie" for "live" read
+  -- as errors, not noise). First run downloads ~120MB to
   -- ~/Library/Application Support/FluidAudio (one-time). Until it loads (or if
   -- off), Apple partials drive the pill as before.
-  stream = "eou160",
+  stream = "eou320",
 
-  -- Trigger key. Must be a bare MODIFIER key name from hs.keycodes.map
-  -- ("rightcmd", "rightalt", "rightctrl", "rightshift", "cmd", …); it is
-  -- watched via a flagsChanged event tap, so ordinary keys won't work here.
-  trigger = { {}, "rightcmd" },
+  -- Trigger: Caps+M through QuickShots' shared Caps (F18) tap. Hold Caps,
+  -- press M to start, keep Caps held while speaking, release Caps to stop
+  -- and paste. A quick Caps+M tap (< tapThreshold) goes hands-free; Caps+M
+  -- again stops. Rebind from Palette (Caps+K). Set to false to disable.
+  capsTrigger = { {}, "m" },
+
+  -- Legacy trigger: a bare MODIFIER key name from hs.keycodes.map
+  -- ("rightcmd", "rightalt", "rightctrl", "rightshift", "cmd", …) watched via
+  -- a flagsChanged event tap, so ordinary keys won't work here. Off (false)
+  -- now that Caps+M is the trigger; Murmur falls back to Right⌘ automatically
+  -- if QuickShots' Caps tap is unavailable.
+  trigger = false,
 
   -- Bluetooth headset microphones can change CoreAudio format/route under
   -- AVAudioEngine and have been the source of installTap crashes. Prefer
   -- stable dedicated mics in this order; set to {} to use system default.
-  preferredInputDevices = {
-    "Insta360 Link 2C",
-    "MacBook Pro Microphone",
-  },
+  preferredInputDevices = { "Insta360 Link 2C" },
   preferredInputDevice = nil, -- legacy single-name override
+
+  -- Speech framework microphone profile: "default" for built-in/ordinary mics,
+  -- or "far-field" when the selected microphone is physically distant.
+  contentHint = "default",
 
   -- Releasing the trigger within this many seconds of pressing = a "tap" →
   -- switch to hands-free instead of stopping. Longer = push-to-talk release.
@@ -124,9 +136,17 @@ local config = {
   -- or failure the locally cleaned transcript pastes instead, so words are
   -- never lost, just less polished.
   autoRefine = true,
-  autoRefineTimeout = 2.25,
+  -- The polish system prompt is ~1.1k tokens, so even short takes need a
+  -- little over two seconds on the free tiers.
+  autoRefineTimeout = 3.0,
   autoRefineMinChars = 12,   -- skip only tiny acknowledgements
   autoRefineMinWords = 4,
+  -- Long takes get proportionally more polish budget: the timeout grows by
+  -- one second per 1000 chars past the first 600, capped at the max. A
+  -- five-minute ramble is exactly where full-transcript polish pays off, so
+  -- it shouldn't be the take most likely to hit the timeout.
+  autoRefineTimeoutMax = 6.0,
+  autoRefineTimeoutPerKChars = 1.0,
 
   -- Free, local cleanup that runs before paste. This is intentionally
   -- conservative: polish transcription artifacts without changing meaning.
@@ -171,6 +191,84 @@ local config = {
   -- Show a small live mic level meter in the pill. Disabled until the daemon
   -- has a crash-safe level source; the visual shell stays small and quiet.
   showInputLevel = true,
+
+  -- Live transcript panel: a scrollable window above the pill showing the
+  -- WHOLE session so far, not just the last line. It auto-grows to
+  -- transcriptPanelMaxHeight, then scrolls pinned to the bottom; scrolling
+  -- up releases the pin and a "↓ live" button re-pins. Committed text
+  -- (stable across liveCommitStableHypotheses consecutive ASR hypotheses,
+  -- or frozen after liveCommitTimeoutSeconds of quiet) renders full-opacity
+  -- and never changes on screen; the still-revisable tail renders dimmed.
+  -- The glossary/corrections dictionary is applied word-level to the live
+  -- text — display only; the raw transcript stays the source of truth and
+  -- the end-of-take polish always reads the raw text, never this view.
+  transcriptPanel = true,
+  transcriptPanelWidth = 520,
+  transcriptPanelMaxHeight = 260,
+  transcriptRenderSeconds = 0.12, -- coalesce partial-burst re-renders
+  liveCommitStableHypotheses = 3,
+  liveCommitTimeoutSeconds = 2.0,
+
+  -- LIVE polish: committed text is divided into sentence-ish segments and
+  -- polished by small LLM calls WHILE you speak — punctuation, caps,
+  -- fillers, restarts, contextual word fixes appear on screen as segments
+  -- settle. Releasing the key races a bounded FULL polish of the accurate
+  -- batch transcript (whole-take context: cross-sentence rambling collapses,
+  -- consistent caps, batch ASR fixes) against the assembled screen text; the
+  -- screen text pastes only when the full polish misses the cap, and a full
+  -- polish that lands late is kept for a Caps+R swap. The batch-final raw
+  -- transcript is always retained for Caps+R. Any live failure just leaves
+  -- segments raw; zero polished segments falls back to the classic
+  -- end-of-take full polish.
+  livePolish = true,
+  livePolishCallTimeout = 2.5,       -- per segment call, racing the response
+  livePolishSettleSeconds = 0.6,     -- lone-segment age before it dispatches
+  livePolishMinSegmentWords = 3,
+  livePolishMaxSegmentWords = 28,    -- force-split without punctuation
+  livePolishWindowMaxWords = 100,    -- catch-up batch cap after outages
+  livePolishMaxCalls = 40,           -- per-take budget
+  livePolishStopGraceMs = 400,       -- wait for an in-flight call at stop
+  -- Cap on the at-stop full-polish race. 1.5 (was 1.2) because a Cerebras
+  -- 429 -> OpenAI fallback lands in 1.1-1.5s and real takes missed the old
+  -- cap by 63-300ms — a great paste 300ms later beats a bad paste on time.
+  livePolishFinalSeconds = 2.0,
+  -- Race the final polish to two providers (fast chain + the anchor — the
+  -- last keyed provider in hone's order, normally OpenAI). First result
+  -- that validates pastes; the loser is ignored (hs http can't cancel).
+  livePolishFinalRace = true,
+  -- One retry with introduced-word feedback when the final polish is
+  -- rejected "words_introduced". Post-cap retry results go down the
+  -- late-polish path.
+  polishRejectRetry = true,
+  -- Auto-swap a late-arriving validated polish into the target field, but
+  -- ONLY when AX positively verifies the pasted text still sits untouched
+  -- at the caret. On any doubt: today's alert + Caps+R.
+  lateAutoApply = true,
+  lateAutoApplyWindowSeconds = 20,
+
+  -- SELF-IMPROVEMENT LOOP -----------------------------------------------
+  -- Take archive: every paste appends full raw/cleaned/pasted/polished text
+  -- + timings to a JSONL so the nightly self-eval (tools/self_eval.lua) can
+  -- replay real takes; log samples truncate at 320 chars and can't.
+  takeArchive = true,
+  takeArchivePath = MURMUR_DIR .. "/takes.jsonl",
+
+  -- Wispr-style edit mining: re-read the target text field a little after
+  -- pasting and diff it against what we pasted. Word replacements the user
+  -- typed are correction candidates, counted like glossary auto-learn and
+  -- promoted into dictation_corrections.tsv on the second sighting.
+  editMining = true,
+  editMiningDelaySeconds = 45,
+  editMiningThreshold = 2,
+  editMinedPath = MURMUR_DIR .. "/dictation_edit_mined.tsv",
+
+  -- Nightly self-eval: replay the day's archived takes through the live
+  -- polish + validator, LLM-judge the pasted output, aggregate cap-miss /
+  -- 429 / rejection rates, and write a report + auto regression fixtures.
+  selfEval = true,
+  selfEvalTime = "03:30",
+  selfEvalLua = "/opt/homebrew/bin/lua",
+  selfEvalDir = MURMUR_DIR .. "/self_eval",
 
   -- Insert a leading space when dictating right after existing text, so
   -- back-to-back takes read "…end of sentence. Next sentence" instead of
@@ -246,6 +344,13 @@ local lastAIReason = nil
 local recognizerEngine = nil
 local lastFinalEngine = nil
 
+-- The newest take, retained in full. `raw` is the daemon's final transcript
+-- (the source of truth — always kept, never edited); `cleaned` is raw after
+-- deterministic local cleanup (voice commands, glossary); `polished` is the
+-- LLM polish when one was produced. The raw/polished toggle swaps the pasted
+-- text between `cleaned` and `polished` in place.
+local lastTake = {}
+
 local function transcriptSample(text)
   if not config.logTranscriptSamples then return nil end
   local cleaned = tostring(text or ""):gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
@@ -271,6 +376,7 @@ end
 local pill = nil
 local pillVisible = false
 local currentLevel = 0
+local hideTranscriptPanel -- defined with the transcript panel below
 
 local PILL_W, PILL_H = 460, 48
 local METER_START, METER_BARS = 344, 9
@@ -382,6 +488,534 @@ local function hidePill()
   if pill then pill:hide() end
   currentLevel = 0
   pillVisible = false
+  if hideTranscriptPanel then hideTranscriptPanel() end
+end
+
+----------------------------------------------------------------
+-- TRANSCRIPT PANEL — the full live transcript, above the pill.
+--
+-- The pill stays a one-line status strip; this panel shows everything said
+-- so far. It is an hs.webview because the behavior is native web behavior:
+-- real text wrapping, real scrolling, pin-to-bottom with user-scroll
+-- release, and incremental DOM updates. Rendering is append-only for the
+-- committed region — only the tail node is rewritten per update — so long
+-- sessions never re-layout the whole transcript on a partial event.
+--
+-- Committed/tail split comes from core.newLiveView (a word commits once it
+-- is stable across N consecutive hypotheses, or when the quiet-period timer
+-- freezes the buffer). Committed words never change on screen.
+----------------------------------------------------------------
+local panel = nil            -- hs.webview
+local panelReady = false
+local panelVisible = false
+local panelQueue = {}        -- JS deferred until the page reports ready
+local panelHeight = 0
+local panelCommittedSent = 0 -- bytes of committed text already in the DOM (legacy path)
+local liveView = nil         -- core.newLiveView for the current take
+local livePolisher = nil     -- core.newLivePolisher when live polish is active
+local liveSource = nil       -- recognizer tag feeding the panel (handoff detect)
+local liveReplacements = nil -- glossary/corrections, loaded once per take
+local liveCommitTimer = nil
+local panelRenderTimer = nil
+local panelRenderDirty = false
+local panelSegSent = {}      -- segment id -> {text, cls} already in the DOM
+local panelOpenSent = nil    -- last open/tail strings sent (live-polish path)
+local panelTailSent = nil
+local livePolishTimer = nil  -- per-call timeout for the in-flight segment call
+local livePolishTransport = nil -- injected sender (previewPanel stubs this)
+local previewTicker = nil
+local previewTimers = {}
+
+-- End any panel preview: a real take must never inherit the preview's
+-- stubbed polish transport.
+local function stopPreview()
+  if previewTicker then previewTicker:stop(); previewTicker = nil end
+  for _, t in ipairs(previewTimers) do pcall(function() t:stop() end) end
+  previewTimers = {}
+  livePolishTransport = nil
+end
+
+local PANEL_MIN_H = 44
+
+-- The pill background/border colors, restated in CSS so the two read as one
+-- surface. The window itself is transparent; the rounded box is HTML.
+local PANEL_HTML = [[<!DOCTYPE html>
+<html><head><meta charset="utf-8"><style>
+  html, body { margin:0; padding:0; background:transparent; height:100%; overflow:hidden; }
+  #box { position:absolute; inset:0; box-sizing:border-box;
+    background:rgba(9,10,12,0.92); border:1px solid rgba(107,199,255,0.22);
+    border-radius:13px; display:flex; flex-direction:column; }
+  #scroller { flex:1; overflow-y:auto; padding:10px 14px; overscroll-behavior:contain;
+    font:14px/1.45 -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+    color:#fff; }
+  #scroller::-webkit-scrollbar { width:6px; }
+  #scroller::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.18); border-radius:3px; }
+  #content { white-space:pre-wrap; word-break:break-word; }
+  #segs span { border-radius:3px;
+    transition: background-color 0.6s ease, opacity 0.25s ease; }
+  #segs span.p { opacity:0.96; }
+  #segs span.r { opacity:0.8; }
+  #segs span.flash { background:rgba(107,199,255,0.28); transition:none; }
+  #open { opacity:0.8; }
+  #tail { opacity:0.5; }
+  #jump { position:absolute; right:10px; bottom:8px; display:none; cursor:pointer;
+    font:12px -apple-system, sans-serif; color:#0b0c0e; user-select:none;
+    background:rgba(107,199,255,0.9); border-radius:10px; padding:3px 10px; }
+</style></head><body>
+<div id="box">
+  <div id="scroller"><div id="content"><span id="segs"></span><span id="open"></span><span id="tail"></span></div></div>
+  <div id="jump">&#8595; live</div>
+</div>
+<script>
+  var segsEl = document.getElementById('segs');
+  var openEl = document.getElementById('open');
+  var tailEl = document.getElementById('tail');
+  var scroller = document.getElementById('scroller');
+  var content = document.getElementById('content');
+  var jump = document.getElementById('jump');
+  var pinned = true;
+  function post(m) { try { webkit.messageHandlers.murmur.postMessage(m); } catch (e) {} }
+  function atBottom() {
+    return scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 6;
+  }
+  function toBottom() { scroller.scrollTop = scroller.scrollHeight; }
+  function setPinned(p) { pinned = p; jump.style.display = p ? 'none' : 'block'; }
+  // Any upward wheel motion releases the pin instantly; scrolling back to
+  // the bottom (or the jump button) re-pins.
+  scroller.addEventListener('wheel', function (e) {
+    if (e.deltaY < 0) setPinned(false);
+  }, { passive: true });
+  scroller.addEventListener('scroll', function () {
+    if (!pinned && atBottom()) setPinned(true);
+  }, { passive: true });
+  jump.addEventListener('click', function () { setPinned(true); toBottom(); });
+  function report() {
+    // 20 = scroller vertical padding, 2 = box border.
+    post({ h: Math.ceil(content.getBoundingClientRect().height) + 22 });
+  }
+  new ResizeObserver(report).observe(content);
+  // Per-segment spans: ids arrive in increasing order, so DOM order is
+  // insertion order. Rewriting a span above the viewport while the user has
+  // scrolled up gets scroll compensation so their reading position holds.
+  // A raw span upgrading to polished flashes briefly (.flash has no
+  // transition in, the base rule fades it out).
+  function seg(id, text, cls) {
+    var el = document.getElementById('s' + id), fresh = !el;
+    if (fresh) {
+      el = document.createElement('span');
+      el.id = 's' + id;
+      segsEl.appendChild(el);
+    }
+    var wasPolished = el.className.indexOf('p') >= 0;
+    var beforeH = scroller.scrollHeight;
+    el.textContent = text + ' ';
+    el.className = cls;
+    if (cls === 'p' && !wasPolished && !fresh) {
+      el.classList.add('flash');
+      setTimeout(function () { el.classList.remove('flash'); }, 40);
+    }
+    if (pinned) toBottom();
+    else scroller.scrollTop += scroller.scrollHeight - beforeH;
+  }
+  function rmseg(id) {
+    var el = document.getElementById('s' + id);
+    if (el) el.remove();
+  }
+  // open = committed words not yet in a segment; tail = still-revisable words.
+  function liveTail(openText, tailText) {
+    if (openEl.textContent !== openText) openEl.textContent = openText;
+    if (tailEl.textContent !== tailText) tailEl.textContent = tailText;
+    if (pinned) toBottom();
+  }
+  // Legacy append-only path (no live polish): committed grows inside #open.
+  function up(commitDelta, tailText) {
+    if (commitDelta) openEl.appendChild(document.createTextNode(commitDelta));
+    if (tailEl.textContent !== tailText) tailEl.textContent = tailText;
+    if (pinned) toBottom();
+  }
+  function rs() {
+    segsEl.textContent = '';
+    openEl.textContent = '';
+    tailEl.textContent = '';
+    setPinned(true);
+  }
+  post({ ready: true });
+</script>
+</body></html>]]
+
+-- Escape a Lua string into a JS string literal (hs.json.encode only accepts
+-- tables). UTF-8 sequences pass through raw; WKWebView's JS accepts them.
+local function jsString(s)
+  local escaped = tostring(s):gsub('[%c"\\]', function(c)
+    if c == '"' then return '\\"' end
+    if c == "\\" then return "\\\\" end
+    if c == "\n" then return "\\n" end
+    if c == "\r" then return "\\r" end
+    if c == "\t" then return "\\t" end
+    return string.format("\\u%04x", c:byte())
+  end)
+  return '"' .. escaped .. '"'
+end
+
+local function panelFrame(h)
+  local f = hs.screen.mainScreen():frame()
+  local w = config.transcriptPanelWidth or 520
+  local pf = pillFrame()
+  return {
+    x = f.x + (f.w - w) / 2,
+    y = pf.y - 8 - h,
+    w = w,
+    h = h,
+  }
+end
+
+local function panelEval(js)
+  if not panel then return end
+  if not panelReady then
+    panelQueue[#panelQueue + 1] = js
+    return
+  end
+  panel:evaluateJavaScript(js)
+end
+
+local function ensurePanel()
+  if panel then return true end
+  local ok, err = pcall(function()
+    local uc = hs.webview.usercontent.new("murmur")
+    uc:setCallback(function(msg)
+      local body = msg and msg.body
+      if type(body) ~= "table" then return end
+      if body.ready then
+        panelReady = true
+        local queued = panelQueue
+        panelQueue = {}
+        for _, js in ipairs(queued) do panel:evaluateJavaScript(js) end
+      elseif tonumber(body.h) then
+        local max = config.transcriptPanelMaxHeight or 260
+        local h = math.max(PANEL_MIN_H, math.min(max, math.floor(body.h)))
+        if h ~= panelHeight then
+          panelHeight = h
+          if panelVisible then panel:frame(panelFrame(h)) end
+        end
+      end
+    end)
+    local view = hs.webview.new(panelFrame(PANEL_MIN_H),
+      { developerExtrasEnabled = false }, uc)
+    -- nonactivating: scrolling/clicking the panel must never steal focus
+    -- from the app the transcript will be pasted into.
+    view:windowStyle({ "borderless", "utility", "nonactivating" })
+    view:level(hs.drawing.windowLevels.overlay)
+    view:behaviorAsLabels({ "canJoinAllSpaces", "stationary" })
+    view:transparent(true)
+    view:allowTextEntry(false)
+    view:html(PANEL_HTML)
+    panel = view
+    panelHeight = PANEL_MIN_H
+  end)
+  if not ok then
+    -- No panel (webview unavailable/misbehaving): fall back to the legacy
+    -- one-line transcript in the pill rather than losing the live view.
+    log.error("transcript panel unavailable; falling back to pill text",
+      { error = tostring(err) })
+    config.transcriptPanel = false
+    return false
+  end
+  return true
+end
+
+local function panelEnabled()
+  return config.transcriptPanel and config.showLiveTranscript
+end
+
+local function showTranscriptPanel()
+  if not panelEnabled() then return false end
+  if not ensurePanel() then return false end
+  if not panelVisible then
+    panel:frame(panelFrame(panelHeight))
+    panel:show()
+    panelVisible = true
+  end
+  return true
+end
+
+hideTranscriptPanel = function()
+  if panel and panelVisible then panel:hide() end
+  panelVisible = false
+  if panelRenderTimer then panelRenderTimer:stop(); panelRenderTimer = nil end
+  if liveCommitTimer then liveCommitTimer:stop(); liveCommitTimer = nil end
+  panelRenderDirty = false
+end
+
+-- Live-polish renderer: diff the polisher's segments against what the DOM
+-- already has (panelSegSent) and send only changed spans, then the open/tail
+-- text. All JS for one render travels as a single eval.
+local function renderPanelLive()
+  if not (liveView and livePolisher) then return end
+  local vsnap = liveView:snapshot()
+  local snap = livePolisher:snapshot()
+  local js, liveIds = {}, {}
+  for _, item in ipairs(snap.items) do
+    liveIds[item.id] = true
+    local cls = item.state == "polished" and "p" or "r"
+    local sent = panelSegSent[item.id]
+    if not sent or sent.text ~= item.text or sent.cls ~= cls then
+      js[#js + 1] = string.format("seg(%d,%s,%s)",
+        item.id, jsString(item.text), jsString(cls))
+      panelSegSent[item.id] = { text = item.text, cls = cls }
+    end
+  end
+  for id in pairs(panelSegSent) do
+    if not liveIds[id] then
+      js[#js + 1] = string.format("rmseg(%d)", id)
+      panelSegSent[id] = nil
+    end
+  end
+  local open = snap.openText or ""
+  local tail = vsnap.tail or ""
+  -- Segments carry their own trailing space; the open run separates itself
+  -- from the tail with one leading space when both are present.
+  if tail ~= "" and open ~= "" then tail = " " .. tail end
+  if open ~= panelOpenSent or tail ~= panelTailSent then
+    js[#js + 1] = string.format("liveTail(%s,%s)", jsString(open), jsString(tail))
+    panelOpenSent, panelTailSent = open, tail
+  end
+  if #js > 0 then panelEval(table.concat(js, ";")) end
+end
+
+-- Legacy renderer (no live polish): committed only ever grows, so the delta
+-- since the last render is a plain suffix append on the JS side.
+local function renderPanelLegacy()
+  if not liveView then return end
+  local snap = liveView:snapshot()
+  if #snap.committed < panelCommittedSent then
+    -- The live view reset (engine handoff): rebuild the DOM from scratch.
+    panelEval("rs()")
+    panelCommittedSent = 0
+  end
+  local delta = ""
+  if #snap.committed > panelCommittedSent then
+    delta = snap.committed:sub(panelCommittedSent + 1)
+    if panelCommittedSent == 0 then delta = delta:gsub("^%s+", "") end
+    panelCommittedSent = #snap.committed
+  end
+  local tail = snap.tail
+  if tail ~= "" and snap.committed ~= "" then tail = " " .. tail end
+  panelEval(string.format("up(%s,%s)", jsString(delta), jsString(tail)))
+end
+
+local function renderPanel()
+  if livePolisher then renderPanelLive() else renderPanelLegacy() end
+end
+
+-- Coalesce renders: partials can arrive in bursts, and the spec's ~200ms
+-- partial cadence means anything faster than ~8 fps here is wasted work.
+local function schedulePanelRender()
+  panelRenderDirty = true
+  if panelRenderTimer then return end
+  panelRenderTimer = hs.timer.doAfter(config.transcriptRenderSeconds or 0.12,
+    function()
+      panelRenderTimer = nil
+      if panelRenderDirty then
+        panelRenderDirty = false
+        renderPanel()
+      end
+    end)
+end
+
+-- hone, resolved lazily once (the live pump and the end-of-take polish both
+-- need it; a missing module disables live polish rather than erroring).
+local honeModule = nil
+local function honeAvailable()
+  if honeModule == nil then
+    local ok, mod = pcall(require, "hone")
+    honeModule = (ok and type(mod) == "table"
+      and type(mod.refineText) == "function") and mod or false
+  end
+  return honeModule or nil
+end
+
+-- Default transport for a segment-polish batch: the compact live prompt
+-- through hone's provider-fallback chain. previewPanel injects a stub here.
+local function honeTransport(dispatch, onDone, onFail)
+  local hone = honeAvailable()
+  if not hone or type(hone.segmentSystemPrompt) ~= "function" then
+    onFail("segment polish unavailable")
+    return
+  end
+  local words = core.wordCount(dispatch.text)
+  hone.refineText(dispatch.text, onDone, onFail, {
+    systemPrompt = hone.segmentSystemPrompt({
+      prevContext = dispatch.prevContext,
+      midSentence = core.continuesMidSentence(dispatch.prevContext),
+      appName = activeTarget and activeTarget.app or nil,
+    }),
+    maxOutputTokens = math.min(300, words * 2 + 16),
+  })
+end
+
+-- Pump: hand the polisher's next eligible batch to the transport. Single
+-- call in flight (enforced by the polisher); a hard per-call timer races the
+-- response so a hung request can't stall the pipeline. Failures revert or
+-- freeze segments — the display just stays raw, the take is never disturbed.
+local function dispatchLivePolish()
+  if not livePolisher then return end
+  local dispatch = livePolisher:nextDispatch(hs.timer.secondsSinceEpoch())
+  if not dispatch then return end
+  local polisher = livePolisher
+  local callId = dispatch.callId
+  local settled = false
+  local function settle(fn)
+    if settled or livePolisher ~= polisher then return end
+    settled = true
+    if livePolishTimer then livePolishTimer:stop(); livePolishTimer = nil end
+    fn()
+    schedulePanelRender()
+    dispatchLivePolish()
+  end
+  livePolishTimer = hs.timer.doAfter(config.livePolishCallTimeout or 2.0,
+    function()
+      settle(function()
+        log.warn("live polish call timed out", { callId = callId })
+        polisher:failResult(callId)
+      end)
+    end)
+  local dispatchedMs = nowMs()
+  local send = livePolishTransport or honeTransport
+  send(dispatch,
+    function(result)
+      settle(function()
+        result = core.trim(tostring(result or ""))
+        result = core.harmonizeSegmentStart(
+          dispatch.prevContext, dispatch.text, result)
+        local ok, reason = core.validateSegmentPolish(dispatch.text, result)
+        if ok then
+          polisher:applyResult(callId, result)
+          -- Per-segment before/after at DEBUG: the feedback loop for tuning
+          -- the segment prompt and validator against real takes.
+          log.debug("live segment polished", {
+            callId = callId,
+            ms = nowMs() - dispatchedMs,
+            input = dispatch.text:sub(1, 90),
+            output = result:sub(1, 90),
+          })
+        else
+          log.warn("live polish segment rejected", {
+            reason = reason,
+            input = dispatch.text:sub(1, 120),
+            output = result:sub(1, 120),
+          })
+          polisher:failResult(callId)
+        end
+      end)
+    end,
+    function(msg)
+      settle(function()
+        if tostring(msg):find("429") then
+          local backoff = polisher.consecutiveFailures >= 1 and 60 or 20
+          polisher:setCooldown(hs.timer.secondsSinceEpoch() + backoff)
+        end
+        log.warn("live polish segment failed", { message = tostring(msg) })
+        polisher:failResult(callId)
+      end)
+    end)
+end
+
+-- Quiet-period commit: when no new hypothesis lands for a while, freeze the
+-- buffer so the view never deadlocks waiting for N-way consensus. With live
+-- polish active the pause also closes the open segment run, so text polishes
+-- DURING silences instead of after them.
+local function armLiveCommitTimeout()
+  if liveCommitTimer then liveCommitTimer:stop() end
+  liveCommitTimer = hs.timer.doAfter(config.liveCommitTimeoutSeconds or 2.0,
+    function()
+      liveCommitTimer = nil
+      if state == "recording" and liveView then
+        liveView:commitAll()
+        if livePolisher then
+          local now = hs.timer.secondsSinceEpoch()
+          livePolisher:feed(liveView:snapshot().committed, now)
+          livePolisher:onQuiet(now)
+          dispatchLivePolish()
+        end
+        schedulePanelRender()
+      end
+    end)
+end
+
+-- New take: fresh live view (+ live polisher when enabled), glossary and
+-- corrections loaded once, empty DOM.
+local function resetLivePanel()
+  liveView = core.newLiveView({
+    stableCount = config.liveCommitStableHypotheses or 3,
+  })
+  liveReplacements = core.loadReplacements(
+    config.glossaryPath, config.correctionMemoryPath)
+  liveSource = nil
+  if livePolishTimer then livePolishTimer:stop(); livePolishTimer = nil end
+  livePolisher = nil
+  if config.livePolish and config.autoRefine and activeProfile ~= "Literal"
+    and (livePolishTransport or honeAvailable()) then
+    livePolisher = core.newLivePolisher({
+      minSegmentWords = config.livePolishMinSegmentWords,
+      maxSegmentWords = config.livePolishMaxSegmentWords,
+      settleSeconds = config.livePolishSettleSeconds,
+      windowMaxWords = config.livePolishWindowMaxWords,
+      maxCalls = config.livePolishMaxCalls,
+    })
+  end
+  panelCommittedSent = 0
+  panelSegSent = {}
+  panelOpenSent, panelTailSent = nil, nil
+  panelEval("rs()")
+end
+
+-- A live hypothesis from the daemon. Word-level glossary/correction fixes
+-- are applied to the DISPLAY text (deterministic, so they can't destabilize
+-- the commit consensus); the polisher consumes the same display text, so its
+-- segment raws carry the glossary layer but never any LLM output.
+local function feedLivePanel(text, source)
+  if not liveView then return end
+  if livePolisher and liveSource ~= nil and source ~= liveSource then
+    -- Engine handoff: the new recognizer re-reads the take from scratch, so
+    -- the polisher's segments no longer describe the committed text.
+    livePolisher:reset()
+    panelSegSent = {}
+    panelOpenSent, panelTailSent = nil, nil
+    panelEval("rs()")
+  end
+  liveSource = source
+  local display = text
+  if liveReplacements then
+    display = core.applyLoadedReplacements(display, liveReplacements)
+  end
+  liveView:update(display, source)
+  if livePolisher then
+    livePolisher:feed(liveView:snapshot().committed,
+      hs.timer.secondsSinceEpoch())
+    dispatchLivePolish()
+  end
+  if showTranscriptPanel() then
+    schedulePanelRender()
+    armLiveCommitTimeout()
+  end
+end
+
+-- Take over the panel with settled text (the pasted result): everything
+-- polished-tier, no tail, one full render. Ends the live pipeline for the
+-- take; the caller captures the polisher BEFORE calling this if it still
+-- needs the segment snapshot.
+local function panelShowText(text)
+  livePolisher = nil
+  if livePolishTimer then livePolishTimer:stop(); livePolishTimer = nil end
+  if not (panel and panelVisible) then return end
+  if liveCommitTimer then liveCommitTimer:stop(); liveCommitTimer = nil end
+  if panelRenderTimer then panelRenderTimer:stop(); panelRenderTimer = nil end
+  panelRenderDirty = false
+  liveView = nil
+  panelCommittedSent = #text
+  panelSegSent = {}
+  panelOpenSent, panelTailSent = nil, nil
+  panelEval(string.format("rs(); seg(0,%s,\"p\")", jsString(text)))
 end
 
 ----------------------------------------------------------------
@@ -419,6 +1053,27 @@ local function appendCorrection(from, to)
   f:write(from, "\t", to, "\n")
   f:close()
   return true
+end
+
+-- Take archive: one JSON line per event in takes.jsonl. `kind = "take"` is
+-- a paste (full raw/cleaned/pasted/polished text — log samples truncate);
+-- "late_polish" is a polish that landed after its cap (kept for Caps+R);
+-- "swap" is a Caps+R toggle. tools/self_eval.lua replays these nightly.
+local function archiveTake(record)
+  if not config.takeArchive then return end
+  local ok, err = pcall(function()
+    record.ts = os.date("%Y-%m-%dT%H:%M:%S%z")
+    local line = hs.json.encode(record)
+    if not line then return end
+    local f = io.open(config.takeArchivePath, "a")
+    if f then
+      f:write(line, "\n")
+      f:close()
+    end
+  end)
+  if not ok then
+    log.warn("take archive write failed", { error = tostring(err) })
+  end
 end
 
 local function cleanupTranscript(text)
@@ -631,6 +1286,7 @@ local function setClipboardTranscript(text)
 end
 
 local learnProperNouns -- defined after the daemon plumbing (needs send())
+local scheduleEditMining -- defined next to learnProperNouns (needs send())
 
 -- Should the transcript get a leading space? True when the character just
 -- before the cursor is a non-space (we'd butt up against existing text).
@@ -692,7 +1348,10 @@ local function captureTarget()
   }
 end
 
-local function pasteTranscript(text, target)
+-- `variant` tags what is being pasted ("raw" | "polished") so the
+-- raw/polished toggle knows which side is on screen. Defaults to "raw" —
+-- every non-polish path (salvage, flush, no-polish) pastes raw text.
+local function pasteTranscript(text, target, variant)
   target = target or activeTarget
   local front = hs.application.frontmostApplication()
   local targetStillFront = target and front and target.pid == front:pid()
@@ -707,6 +1366,23 @@ local function pasteTranscript(text, target)
   fields.finalizeMs = lastFinalizeMs
   fields.takeMs = lastTakeMs
   log.info("pasting transcript", fields)
+  archiveTake({
+    kind = "take",
+    app = target and target.app or nil,
+    profile = activeProfile,
+    engine = lastFinalEngine,
+    raw = lastTake.raw,
+    cleaned = lastTake.cleaned,
+    polished = lastTake.polished,
+    pasted = text,
+    variant = variant or "raw",
+    aiReason = lastAIReason,
+    aiModel = lastAIModel,
+    aiProvider = lastAIProvider,
+    aiMs = lastAILatencyMs,
+    finalizeMs = lastFinalizeMs,
+    takeMs = lastTakeMs,
+  })
   local restoreTo = nil
   if not config.keepOnClipboard then
     restoreTo = savedClipboard
@@ -731,11 +1407,17 @@ local function pasteTranscript(text, target)
     lastPasteApp = app and app:name() or nil
     lastPasteQueueMs = elapsedMs(pasteQueuedAtMs)
     lastTotalLatencyMs = elapsedMs(finishAtMs)
+    -- Exactly what landed in the document (leading space included), for the
+    -- raw/polished toggle's in-place swap.
+    lastTake.pastedText = text
+    lastTake.pastedVariant = variant or "raw"
     log.info("paste keystroke sent", {
       app = lastPasteApp,
+      variant = lastTake.pastedVariant,
       pasteQueueMs = lastPasteQueueMs,
     })
     if learnProperNouns then learnProperNouns(text) end
+    if scheduleEditMining then scheduleEditMining(text) end
     -- Our own synthetic ⌘V trips the typed-flag; clear it once it lands.
     hs.timer.doAfter(0.3, function() typedSinceLastPaste = false end)
     if restoreTo then
@@ -798,6 +1480,379 @@ local function flushPendingDelivery(reason)
   pasteTranscript(pending.localText, pending.target)
 end
 
+----------------------------------------------------------------
+-- LATE-POLISH APPLY + SWAP HELPERS (shared by the delivery paths and the
+-- Caps+R toggle).
+----------------------------------------------------------------
+local function utf16Length(s)
+  local n = 0
+  local ok = pcall(function()
+    for _, cp in utf8.codes(s) do n = n + (cp > 0xFFFF and 2 or 1) end
+  end)
+  if not ok then return #s end -- AX verification still guards the swap
+  return n
+end
+
+-- AX verification + selection: true only when the focused element has a
+-- collapsed caret sitting immediately after text exactly equal to
+-- `expected`, in which case that range is selected, ready for ⌘V.
+local function axSelectPastedText(expected)
+  local swapped = false
+  pcall(function()
+    local focused = hs.axuielement.systemWideElement()
+      :attributeValue("AXFocusedUIElement")
+    if not focused then return end
+    local range = focused:attributeValue("AXSelectedTextRange")
+    local loc = range and (range.location or range.loc)
+    local selLen = (range and (range.length or range.len)) or 0
+    if not loc or selLen ~= 0 then return end
+    local len = utf16Length(expected)
+    if loc < len then return end
+    local before = focused:parameterizedAttributeValue("AXStringForRange",
+      { location = loc - len, length = len })
+    if before ~= expected then return end
+    focused:setAttributeValue("AXSelectedTextRange",
+      { location = loc - len, length = len })
+    swapped = true
+  end)
+  return swapped
+end
+
+local swapTimers = {} -- anchor swap timers against hs.timer GC (footgun)
+
+-- Clipboard + ⌘V over the selection axSelectPastedText just made, then
+-- retag `take` so Caps+R keeps toggling correctly. opts.expectLen (utf16)
+-- re-verifies the selection is still exactly that wide right before the
+-- keystroke — aborts if the user typed in the 10ms gap (auto-apply only).
+local function queueSwapPaste(take, text, variant, opts)
+  setClipboardTranscript(text)
+  local t = {}
+  swapTimers[t] = true
+  t.paste = hs.timer.doAfter(config.pasteDelay, function()
+    if opts and opts.expectLen then
+      local stillSelected = false
+      pcall(function()
+        local focused = hs.axuielement.systemWideElement()
+          :attributeValue("AXFocusedUIElement")
+        local range = focused and focused:attributeValue("AXSelectedTextRange")
+        stillSelected = range ~= nil
+          and (range.length or range.len) == opts.expectLen
+      end)
+      if not stillSelected then
+        swapTimers[t] = nil
+        log.warn("swap aborted; selection changed before paste")
+        return
+      end
+    end
+    hs.eventtap.keyStroke({ "cmd" }, "v", 0)
+    take.pastedText = text
+    take.pastedVariant = variant
+    -- Our own synthetic ⌘V trips the typed-flag; clear it once it lands.
+    t.clear = hs.timer.doAfter(0.3, function()
+      typedSinceLastPaste = false
+      swapTimers[t] = nil
+    end)
+  end)
+end
+
+-- Auto-apply a late validated polish IFF every guard holds. Returns true
+-- when the swap keystroke was queued; false means caller falls back to the
+-- alert + Caps+R behavior. NEVER clipboard-pastes on AX failure.
+local function autoApplyLatePolish(take, replacement, startedMs)
+  if not config.lateAutoApply then return false end
+  if state ~= "idle" then return false end        -- a new take is under way
+  if typedSinceLastPaste then return false end    -- user has moved on
+  if type(take.pastedText) ~= "string" then return false end -- paste withheld
+  local windowMs = (config.lateAutoApplyWindowSeconds or 20) * 1000
+  if startedMs and nowMs() - startedMs > windowMs then return false end
+  local text = replacement
+  -- Mirror the smart-spacing decision the original paste made.
+  if take.pastedText:match("^%s") then text = " " .. text end
+  if text == take.pastedText then return false end
+  if not axSelectPastedText(take.pastedText) then return false end
+  queueSwapPaste(take, text, "polished",
+    { expectLen = utf16Length(take.pastedText) })
+  return true
+end
+
+-- A validated full polish arrived after its take already pasted. Store it
+-- for Caps+R and, when AX can prove the pasted text is still untouched at
+-- the caret, swap it in place (fix 2). `take` is the lastTake identity
+-- captured at stop — the cross-take guard.
+local function handleLatePolish(take, takeId, result, startedMs)
+  if lastTake ~= take then return end
+  if type(result) ~= "string" or result == "" then return end
+  if result == take.cleaned then return end
+  if take.pastedText and result == trim(take.pastedText) then return end
+  take.polished = result
+  local applied = autoApplyLatePolish(take, result, startedMs)
+  log.info(applied and "late final polish auto-applied"
+      or "final polish arrived after cap; kept for swap", {
+    polishMs = startedMs and (nowMs() - startedMs) or nil,
+    takeId = takeId, applied = applied,
+  })
+  archiveTake({ kind = "late_polish", takeId = takeId,
+    polished = result, applied = applied or nil })
+  hs.alert.show(applied and "Murmur: polished ✓ — Caps+R for raw"
+    or "Polished — Caps+R to swap", 1.2)
+end
+
+-- WYSIWYG delivery: live polishing produced screen text, so the paste is the
+-- assembled live view — polished segments, plus the not-yet-polished
+-- remainder spliced from the (more accurate) batch final where an anchor
+-- exists, plus one bounded touch-up call over that remainder. No full-take
+-- polish happens; the batch raw stays in lastTake for Caps+R.
+-- Stop path when live polishing did real work. Two legs race:
+--   A) a FULL polish of the cleaned BATCH transcript — whole-take context
+--      (cross-sentence rambling collapses, consistent capitalization) over
+--      the most accurate recognizer text, so stream mishearings the batch
+--      pass corrected can never reach the paste;
+--   B) the assembled screen text — polished segments plus the remainder
+--      spliced from the batch final — pasted only when leg A misses its cap
+--      or rejects. A leg-A result arriving after the cap is kept on the
+--      Caps+R swap side (same contract as the classic path).
+-- The paste therefore never waits longer than livePolishFinalSeconds and is
+-- never worse than what the panel already showed.
+local function deliverLiveAssembled(polisher, rawText, cleanedBatch)
+  takeSequence = takeSequence + 1
+  local pending = {
+    id = takeSequence,
+    localText = cleanedBatch,
+    target = activeTarget,
+    valid = true,
+  }
+  pendingDelivery = pending
+  local startedMs = nowMs()
+  local take = lastTake
+
+  -- Leg B: assemble the screen text (cached after the first call).
+  local function assembleFallback()
+    if pending.fallbackText then return pending.fallbackText end
+    polisher:seal()
+    local snap = polisher:snapshot()
+    local lastPolished = 0
+    for i, item in ipairs(snap.items) do
+      if item.state == "polished" then lastPolished = i end
+    end
+    local prefixText, prefixRaw, remainderParts = {}, {}, {}
+    for i, item in ipairs(snap.items) do
+      if i <= lastPolished then
+        prefixText[#prefixText + 1] = item.text
+        prefixRaw[#prefixRaw + 1] = item.raw
+      else
+        remainderParts[#remainderParts + 1] = item.text
+      end
+    end
+    if snap.openText ~= "" then
+      remainderParts[#remainderParts + 1] = snap.openText
+    end
+    local prefix = table.concat(prefixText, " ")
+    local remainder = table.concat(remainderParts, " ")
+    -- Where the live view ran out of polish, prefer the batch recognizer's
+    -- words: anchor the prefix's raw stream text inside the batch final and
+    -- take everything after the anchor.
+    local spliced = core.spliceBatchTail(table.concat(prefixRaw, " "), rawText)
+    if spliced then remainder = spliced end
+    local assembled = core.cleanupTranscript(trim(prefix .. " " .. remainder), {
+      glossaryPath = config.glossaryPath,
+      correctionsPath = config.correctionMemoryPath,
+      snippetsPath = config.snippetsPath,
+      voiceCommands = config.voiceCommands,
+      lightCleanup = activeProfile ~= "Literal",
+    })
+    assembled = trim(assembled)
+    if assembled == "" then assembled = cleanedBatch end
+    pending.fallbackText = assembled
+    pending.localText = assembled
+    return assembled
+  end
+
+  local function finalize(final, how, meta)
+    if not pending.valid or pendingDelivery ~= pending then return end
+    pendingDelivery = nil
+    for _, t in ipairs({ pending.finalCap, pending.polishPill,
+      pending.graceWaiter, pending.graceCap }) do
+      if t then t:stop() end
+    end
+    polisher:seal()
+    local counts = polisher:counts()
+    if state == "idle" then hidePill() end -- don't clobber a new take's pill
+    play(config.soundStop)
+    lastTake.polished = final ~= lastTake.cleaned and final or nil
+    lastAIReason = how
+    lastAILatencyMs = nowMs() - startedMs
+    lastAIModel = meta and meta.model or lastAIModel
+    lastAIProvider = meta and meta.provider or lastAIProvider
+    log.info("delivering live-polished transcript", {
+      input = transcriptLogFields(rawText),
+      output = transcriptLogFields(final),
+      segmentsPolished = counts.polished,
+      segmentsRaw = counts.closed + counts.pending + counts.raw_final,
+      calls = counts.calls,
+      finalPolishWon = how == "final_polish",
+      stopMs = nowMs() - startedMs,
+    })
+    panelShowText(final)
+    pasteTranscript(final, pending.target,
+      lastTake.polished and "polished" or "raw")
+  end
+
+  local function finishWithFallback()
+    finalize(assembleFallback(), "live_assembled")
+  end
+
+  -- Give an in-flight segment call a short grace to land before leg B is
+  -- assembled (its result is already paid for). Assembly only — the paste
+  -- waits on leg A or its cap, never on the grace. Timers are anchored on
+  -- `pending` (held by pendingDelivery) so the GC can't collect them.
+  local graceSeconds = (config.livePolishStopGraceMs or 400) / 1000
+  local function afterGrace(fn)
+    if not polisher.inflight or graceSeconds <= 0 then
+      fn()
+      return
+    end
+    local graced = false
+    local function once()
+      if graced then return end
+      graced = true
+      if pending.graceWaiter then pending.graceWaiter:stop() end
+      if pending.graceCap then pending.graceCap:stop() end
+      pending.graceWaiter, pending.graceCap = nil, nil
+      if pending.valid and pendingDelivery == pending then fn() end
+    end
+    pending.graceWaiter = hs.timer.waitUntil(
+      function() return not polisher.inflight end, once, 0.05)
+    pending.graceCap = hs.timer.doAfter(graceSeconds, once)
+  end
+
+  setClipboardTranscript(cleanedBatch) -- local backup while we wait
+  pending.polishPill = hs.timer.doAfter(0.35, function()
+    if pendingDelivery == pending and pending.valid then
+      showPill("Polishing...", false)
+    end
+  end)
+
+  local hone = honeAvailable()
+  local budget = config.livePolishFinalSeconds or 1.2
+  local shouldPolish = config.autoRefine
+    and select(1, core.shouldUseAI(cleanedBatch, activeProfile, {
+      minWords = config.autoRefineMinWords,
+      minChars = config.autoRefineMinChars,
+    }))
+  if not hone or budget <= 0 or not shouldPolish then
+    afterGrace(finishWithFallback)
+    return
+  end
+
+  afterGrace(assembleFallback) -- precompute leg B while leg A runs
+
+  -- FINAL-POLISH RACE (fix 1+3a): two refineText lanes with disjoint
+  -- providers (fast chain vs the pinned anchor); the first result that
+  -- validates wins. The pure state machine owns the latch/retry/cap logic;
+  -- this driver just maps its actions onto timers, HTTP, and the paste.
+  local race = core.newFinalPolishRace({
+    retryEnabled = config.polishRejectRetry ~= false,
+  })
+  pending.race = race
+  -- Build the polish system prompt once (one glossary read for both lanes;
+  -- also the base the retry lane appends feedback to). Same content
+  -- refineText would build itself from profile + context.app.
+  local sysPrompt = type(hone.dictationSystemPrompt) == "function"
+    and hone.dictationSystemPrompt({
+      profile = activeProfile,
+      appName = pending.target and pending.target.app or nil,
+    }) or nil
+
+  local runLane -- forward decl
+  local function onLaneResult(result, meta)
+    if not pending.valid then return end -- cancelled/superseded take
+    result = trim(tostring(result or ""))
+    local accepted, rejectReason = core.validateAIOutput(cleanedBatch, result)
+    if accepted then
+      local action = race:accepted()
+      if action == "deliver" then
+        finalize(result, "final_polish", meta)
+      elseif action == "late" then
+        handleLatePolish(take, pending.id, result, startedMs)
+      end -- "drop": a winner already landed
+    else
+      local action = race:rejected(rejectReason)
+      -- Always log reason AND rejected text (the "4 Faith" lesson).
+      if action == "retry" then
+        local introduced = core.introducedWords(cleanedBatch, result)
+        log.warn("final polish rejected; retrying with feedback", {
+          reason = rejectReason, takeId = pending.id,
+          introduced = table.concat(introduced, ","),
+          output = result:sub(1, 200),
+        })
+        -- Only append feedback when we hold the base prompt; a nil base
+        -- must degrade to refineText's own default prompt, never to a
+        -- feedback-only system prompt.
+        runLane({ systemPrompt = sysPrompt
+          and (sysPrompt .. "\n\n" .. core.retryFeedback(introduced))
+          or nil })
+      elseif action == "fallback" then
+        log.warn("final polish rejected; pasting screen text", {
+          reason = rejectReason, takeId = pending.id,
+          output = result:sub(1, 200),
+        })
+        finishWithFallback()
+      else
+        log.debug("late/loser final polish rejected", {
+          reason = rejectReason, takeId = pending.id,
+          output = result:sub(1, 200),
+        })
+      end
+    end
+  end
+  local function onLaneFail(msg)
+    if not pending.valid then return end
+    if race:failed() == "fallback" then
+      log.warn("final polish failed; pasting screen text", {
+        message = tostring(msg),
+      })
+      finishWithFallback()
+    else
+      log.debug("final polish lane failed (race continues or settled)", {
+        message = tostring(msg), takeId = pending.id,
+      })
+    end
+  end
+  runLane = function(extra)
+    race:launched()
+    hone.refineText(cleanedBatch, onLaneResult, onLaneFail, {
+      profile = activeProfile,
+      maxOutputTokens = core.maxOutputTokens(cleanedBatch),
+      context = pending.target and {
+        app = pending.target.app,
+        beforeCursor = pending.target.beforeCursor,
+      } or nil,
+      systemPrompt = extra and extra.systemPrompt or sysPrompt,
+      provider = extra and extra.provider or nil,
+      excludeProviders = extra and extra.excludeProviders or nil,
+    })
+  end
+
+  pending.finalCap = hs.timer.doAfter(budget, function()
+    if race:onCap() == "fallback" then
+      log.warn("final polish missed the cap; pasting screen text", {
+        budgetSeconds = budget, takeId = pending.id,
+      })
+      finishWithFallback()
+    end
+  end)
+
+  local anchor = config.livePolishFinalRace
+    and type(hone.raceAnchorProvider) == "function"
+    and hone.raceAnchorProvider() or nil
+  if anchor then
+    runLane({ excludeProviders = { [anchor] = true } }) -- lane A: fast chain
+    runLane({ provider = anchor })                      -- lane B: anchor pinned
+  else
+    runLane(nil) -- single lane: exactly today's behavior
+  end
+end
+
 -- Deliver a finished transcript: run it through the LLM refiner when
 -- enabled (pill shows progress), pasting the raw text on any failure or
 -- timeout so words are never lost — just less polished.
@@ -822,6 +1877,18 @@ local function deliverTranscript(text)
     log.info("local cleanup kept transcript", transcriptLogFields(text))
   end
   if handleDictationCommand(text) then return end
+  -- Retain the take in full. The raw transcript is the source of truth; the
+  -- polish (live or end-of-take) is a derived view of it, and the
+  -- raw/polished toggle needs both sides after the paste.
+  lastTake = { raw = rawText, cleaned = text, at = os.time() }
+  -- WYSIWYG: when live polishing did real work, the paste is the screen
+  -- text; zero polished segments falls through to the classic full-take
+  -- polish below (short takes, outages, stream model missing).
+  if livePolisher and livePolisher:counts().polished > 0 then
+    deliverLiveAssembled(livePolisher, rawText, text)
+    return
+  end
+  panelShowText(text)
   local hone = nil
   local shouldPolish, skipReason = core.shouldUseAI(text, activeProfile, {
     minWords = config.autoRefineMinWords,
@@ -850,7 +1917,7 @@ local function deliverTranscript(text)
     hidePill()
     play(config.soundStop)
     lastAIReason = skipReason
-    pasteTranscript(text, activeTarget)
+    pasteTranscript(text, activeTarget, "raw")
     return
   end
 
@@ -869,6 +1936,7 @@ local function deliverTranscript(text)
   })
 
   local done = false
+  local take = lastTake
   local timeout = nil
   local polishPill = hs.timer.doAfter(0.35, function()
     if pendingDelivery == pending and pending.valid then
@@ -893,17 +1961,25 @@ local function deliverTranscript(text)
         output = transcriptLogFields(result),
         polishMs = elapsedMs(polishStartMs),
       })
+      lastTake.polished = result
     else
       local fields = transcriptLogFields(text)
       fields.polishMs = elapsedMs(polishStartMs)
       log.info("dictation polish returned raw", fields)
     end
-    pasteTranscript(result, pending.target)
+    pasteTranscript(result, pending.target,
+      result ~= text and "polished" or "raw")
   end
 
-  timeout = hs.timer.doAfter(config.autoRefineTimeout, function()
+  -- Long transcripts get a proportionally longer polish budget (capped);
+  -- see autoRefineTimeoutMax in config.
+  local timeoutSeconds = math.min(
+    config.autoRefineTimeoutMax or 6.0,
+    (config.autoRefineTimeout or 2.25)
+      + math.max(0, #text - 600) / 1000 * (config.autoRefineTimeoutPerKChars or 1.0))
+  timeout = hs.timer.doAfter(timeoutSeconds, function()
     log.warn("dictation polish timed out", {
-      timeoutSeconds = config.autoRefineTimeout,
+      timeoutSeconds = timeoutSeconds,
       chars = #text,
     })
     finishWith(text, "timeout")
@@ -911,8 +1987,22 @@ local function deliverTranscript(text)
   hone.refineText(text,
     function(result, meta)
       local accepted, rejectReason = core.validateAIOutput(text, result)
+      if done then
+        -- The timeout already pasted raw, but the polish still arrived and
+        -- the take wasn't cancelled: store it for Caps+R and maybe
+        -- auto-apply (handleLatePolish re-checks lastTake == take and the
+        -- pasted-identity guards internally).
+        if accepted and result ~= text and pending.valid then
+          handleLatePolish(take, pending.id, trim(tostring(result)),
+            polishStartMs)
+        end
+        return
+      end
       if not accepted then
-        log.warn("dictation polish rejected", { reason = rejectReason, takeId = pending.id })
+        log.warn("dictation polish rejected", {
+          reason = rejectReason, takeId = pending.id,
+          output = tostring(result):sub(1, 200),
+        })
         finishWith(text, "rejected:" .. rejectReason, meta)
       else
         finishWith(result, nil, meta)
@@ -1016,10 +2106,12 @@ local function onExit(_, code)
     unbindEsc()
     -- Salvage the take: the live transcript was streamed to us, so a dead
     -- daemon never loses words.
+    if livePolisher then livePolisher:seal(); livePolisher = nil end
     if lastPartial ~= "" then
       log.warn("salvaging transcript after daemon exit", transcriptLogFields(lastPartial))
       if wasStopping and exitStopReason == "finish" then
         play(config.soundStop)
+        lastTake = { raw = lastPartial, cleaned = lastPartial, at = os.time() }
         pasteTranscript(lastPartial)
       else
         setClipboardTranscript(lastPartial)
@@ -1054,10 +2146,8 @@ spawnDaemon = function()
   if config.punctuation then
     table.insert(args, "--punctuation")
   end
-  local input = hs.audiodevice.defaultInputDevice()
   table.insert(args, "--content-hint")
-  table.insert(args, input and input:name() == "Insta360 Link 2C"
-    and "far-field" or "default")
+  table.insert(args, config.contentHint or "default")
   log.info("spawning daemon", {
     binary = config.binary,
     locale = config.locale,
@@ -1175,6 +2265,108 @@ learnProperNouns = function(text)
   end
 end
 
+-- Wispr-style edit mining: after a paste, snapshot the focused field's
+-- value; editMiningDelaySeconds later, re-read it and let core.mineEdits
+-- attribute word replacements inside the pasted region to the user. Counts
+-- live in editMinedPath ("from\tto\tcount"; -1 = already promoted); a pair
+-- seen editMiningThreshold times is promoted into the corrections file the
+-- polish + display layers already consume. Timers anchor on this table —
+-- an unanchored doAfter can be GC'd before firing.
+local editMiningPending = {}
+
+local function readFocusedFieldValue()
+  local ok, elem, value = pcall(function()
+    local focused = hs.axuielement.systemWideElement()
+      :attributeValue("AXFocusedUIElement")
+    if not focused then return nil, nil end
+    return focused, focused:attributeValue("AXValue")
+  end)
+  if not ok then return nil, nil end
+  return elem, type(value) == "string" and value or nil
+end
+
+local function loadEditMineCounts()
+  local counts = {}
+  local f = io.open(config.editMinedPath, "r")
+  if f then
+    for line in f:lines() do
+      local from, to, n = line:match("^(.-)\t(.-)\t(%-?%d+)$")
+      if from and from ~= "" and to then
+        counts[from .. "\t" .. to] = tonumber(n)
+      end
+    end
+    f:close()
+  end
+  return counts
+end
+
+local function saveEditMineCounts(counts)
+  local f = io.open(config.editMinedPath, "w")
+  if not f then return end
+  for key, n in pairs(counts) do
+    local from, to = key:match("^(.-)\t(.*)$")
+    f:write(from, "\t", to, "\t", n, "\n")
+  end
+  f:close()
+end
+
+local function mineEditsNow(job)
+  editMiningPending[job] = nil
+  local ok, err = pcall(function()
+    local after = job.elem:attributeValue("AXValue")
+    if type(after) ~= "string" then return end
+    local edits = core.mineEdits(job.pasted, job.before, after)
+    if #edits == 0 then return end
+    local counts = loadEditMineCounts()
+    local promoted = {}
+    for _, edit in ipairs(edits) do
+      local key = edit.from .. "\t" .. edit.to
+      local n = counts[key]
+      if n ~= -1 then
+        n = (n or 0) + 1
+        if n >= (config.editMiningThreshold or 2) then
+          if appendCorrection(edit.from, edit.to) then
+            counts[key] = -1
+            promoted[#promoted + 1] = edit.from .. " → " .. edit.to
+          end
+        else
+          counts[key] = n
+        end
+      end
+      log.info("edit mined from user correction", {
+        from = edit.from, to = edit.to, count = counts[key],
+      })
+    end
+    saveEditMineCounts(counts)
+    if #promoted > 0 then
+      send("reload-context")
+      hs.alert.show("Murmur learned: "
+        .. table.concat(promoted, ", "), 1.2)
+    end
+  end)
+  if not ok then
+    log.debug("edit mining pass skipped", { error = tostring(err) })
+  end
+end
+
+scheduleEditMining = function(pastedText)
+  if not config.editMining then return end
+  local job = { pasted = pastedText }
+  editMiningPending[job] = true
+  -- Snapshot slightly after the ⌘V so the field has processed the paste.
+  job.snapshotTimer = hs.timer.doAfter(0.5, function()
+    local elem, before = readFocusedFieldValue()
+    if not elem or not before or #before > 20000
+      or not before:find(job.pasted, 1, true) then
+      editMiningPending[job] = nil
+      return
+    end
+    job.elem, job.before = elem, before
+    job.timer = hs.timer.doAfter(config.editMiningDelaySeconds or 45,
+      function() mineEditsNow(job) end)
+  end)
+end
+
 ----------------------------------------------------------------
 -- STOP WATCHDOG — "Finishing…" must never hang.
 --
@@ -1275,8 +2467,10 @@ local function armWatchdog(timeoutSeconds)
         end
       end)
     end
+    if livePolisher then livePolisher:seal(); livePolisher = nil end
     if reason == "finish" and lastPartial ~= "" then
       play(config.soundStop)
+      lastTake = { raw = lastPartial, cleaned = lastPartial, at = os.time() }
       pasteTranscript(lastPartial)
     end
     if not wasCancel or not wasQuiet then
@@ -1342,7 +2536,11 @@ handleEvent = function(event)
     if event.text and event.text ~= "" then
       lastPartial = event.text
       if state == "recording" then
-        if config.showLiveTranscript then
+        if panelEnabled() and liveView then
+          -- Full transcript lives in the panel; the pill stays a status
+          -- strip (its "Listening" text is already up from "started").
+          feedLivePanel(event.text, event.source)
+        elseif config.showLiveTranscript then
           showPill(event.text, true)
         else
           showPill("Listening", true)
@@ -1445,6 +2643,8 @@ function M.begin()
   stopOnStarted = false
   lastPartial = ""
   stopReason = nil
+  stopPreview()
+  if panelEnabled() then resetLivePanel() end
   pressTime = hs.timer.secondsSinceEpoch()
   savedClipboard = hs.pasteboard.getContents()
   if config.autoRefine then
@@ -1479,7 +2679,22 @@ function M.finish()
     setClipboardTranscript(lastPartial)
   end
   armWatchdog()
-  showPill(lastPartial ~= "" and lastPartial or "Listening", false)
+  if panelEnabled() and liveView then
+    -- The take is over: settle the whole live view to committed opacity and,
+    -- with live polish on, flush the remaining words as a final segment so
+    -- its call overlaps the batch finalize.
+    liveView:commitAll()
+    if livePolisher then
+      local now = hs.timer.secondsSinceEpoch()
+      livePolisher:feed(liveView:snapshot().committed, now)
+      livePolisher:finishTake(now)
+      dispatchLivePolish()
+    end
+    renderPanel()
+    showPill("Listening", false)
+  else
+    showPill(lastPartial ~= "" and lastPartial or "Listening", false)
+  end
   local thisFinish = finishAtMs
   hs.timer.doAfter(0.4, function()
     if state == "stopping" and stopReason == "finish"
@@ -1494,6 +2709,7 @@ function M.cancel(quiet)
   if state ~= "recording" and state ~= "starting" then return end
   log.info("cancel requested", { quiet = quiet, state = state })
   cancelQuiet = quiet or false
+  if livePolisher then livePolisher:reset() end
   state = "stopping"
   stopReason = "cancel"
   disarmStartWatchdog()
@@ -1522,13 +2738,56 @@ local function triggerReleased()
 end
 
 ----------------------------------------------------------------
--- TRIGGER TAP — watches the bare modifier key (default: Right⌘).
+-- CAPS TRIGGER — Caps+M via QuickShots' shared Caps (F18) tap (default).
+--
+-- Caps+M (non-autorepeat keyDown, consumed) starts a take; QuickShots'
+-- release hook fires when Caps is let go and routes through the same
+-- tap/hold logic as the legacy modifier trigger: a quick release goes
+-- hands-free, a longer hold stops and pastes. While hands-free, Caps+M
+-- again stops.
+----------------------------------------------------------------
+local capsTriggerArmed = false -- Caps+M fired during the current Caps hold
+
+local function startCapsTrigger()
+  local b = config.capsTrigger
+  if type(b) ~= "table" or not b[2] then return false end
+  local okQS, qs = pcall(require, "quickshots")
+  if not (okQS and type(qs) == "table"
+      and type(qs.registerCapsAction) == "function"
+      and type(qs.registerCapsReleaseHook) == "function") then
+    return false
+  end
+  qs.registerCapsAction(b[1] or {}, b[2], function()
+    if state == "idle" then
+      capsTriggerArmed = true
+      log.debug("caps trigger down", { key = b[2] })
+      M.begin()
+    elseif handsFree and (state == "recording" or state == "starting") then
+      capsTriggerArmed = false
+      log.debug("caps trigger stop (hands-free)", { key = b[2] })
+      M.finish()
+    end
+  end)
+  qs.registerCapsReleaseHook("murmur", function()
+    if not capsTriggerArmed then return end
+    capsTriggerArmed = false
+    log.debug("caps trigger released", { state = state })
+    triggerReleased()
+  end)
+  log.info("caps trigger registered", { binding = "caps+" .. tostring(b[2]) })
+  return true
+end
+
+----------------------------------------------------------------
+-- TRIGGER TAP — legacy bare modifier key trigger (e.g. Right⌘), plus the
+-- keyDown watcher that smart spacing relies on.
 --
 -- Modifier presses arrive as flagsChanged events. The key's press/release
 -- is never consumed (a lone modifier is harmless to apps); instead, a
 -- keyDown of any other key during the hold marks the press as a normal
 -- keyboard shortcut: recording cancels silently and the combo passes
--- through untouched.
+-- through untouched. With no modifier trigger configured, only the keyDown
+-- watcher runs.
 ----------------------------------------------------------------
 local trigTap = nil
 local trigDown = false
@@ -1542,25 +2801,29 @@ local MODIFIER_FLAG = {
   ctrl = "ctrl", rightctrl = "ctrl",
 }
 
-local function startTriggerTap()
-  local keyName = tostring(config.trigger[2] or "rightcmd"):lower()
-  local trigCode = hs.keycodes.map[keyName]
-  local flagName = MODIFIER_FLAG[keyName]
-  if not trigCode or not flagName then
-    log.error("invalid trigger", { key = keyName })
-    hs.alert.show("dictation: trigger '" .. keyName ..
-      "' must be a modifier key (e.g. rightcmd)", 4)
-    return
+local function startTriggerTap(trigger)
+  local keyName, trigCode, flagName = nil, nil, nil
+  if type(trigger) == "table" then
+    keyName = tostring(trigger[2] or "rightcmd"):lower()
+    trigCode = hs.keycodes.map[keyName]
+    flagName = MODIFIER_FLAG[keyName]
+    if not trigCode or not flagName then
+      log.error("invalid trigger", { key = keyName })
+      hs.alert.show("dictation: trigger '" .. keyName ..
+        "' must be a modifier key (e.g. rightcmd)", 4)
+      trigCode, flagName = nil, nil
+    end
   end
 
   local typeFlags   = hs.eventtap.event.types.flagsChanged
   local typeKeyDown = hs.eventtap.event.types.keyDown
+  local types = trigCode and { typeFlags, typeKeyDown } or { typeKeyDown }
 
   if trigTap then trigTap:stop(); trigTap = nil end
-  trigTap = hs.eventtap.new({ typeFlags, typeKeyDown }, function(e)
+  trigTap = hs.eventtap.new(types, function(e)
     local etype = e:getType()
 
-    if etype == typeFlags and e:getKeyCode() == trigCode then
+    if trigCode and etype == typeFlags and e:getKeyCode() == trigCode then
       local pressed = e:getFlags()[flagName] or false
       if pressed and not trigDown then
         trigDown = true
@@ -1594,7 +2857,7 @@ local function startTriggerTap()
     return false
   end)
   trigTap:start()
-  log.info("trigger tap started", { key = keyName })
+  log.info("trigger tap started", { key = keyName or "none (keyDown watcher only)" })
 end
 
 ----------------------------------------------------------------
@@ -1624,9 +2887,252 @@ function M.promptCorrection()
   return true
 end
 
+----------------------------------------------------------------
+-- RAW / POLISHED TOGGLE — swap the last paste between versions.
+--
+-- Polish is a derived, non-destructive view: the raw transcript is always
+-- retained, so the other version is always available after a paste. In apps
+-- that speak the accessibility text API the pasted text is re-selected
+-- (verified character-for-character first, so foreign text is never
+-- touched) and replaced in place; elsewhere the other version goes on the
+-- clipboard to paste manually.
+----------------------------------------------------------------
+function M.toggleRawPolished()
+  local take = lastTake
+  if not take.pastedText then
+    hs.alert.show("Murmur: nothing to toggle", 1.0)
+    return false
+  end
+  local other, otherVariant
+  if take.pastedVariant == "polished" then
+    other, otherVariant = take.cleaned, "raw"
+  else
+    other, otherVariant = take.polished, "polished"
+  end
+  if type(other) ~= "string" or other == "" then
+    hs.alert.show(take.pastedVariant == "polished"
+      and "Murmur: raw version unavailable"
+      or "Murmur: no polished version of this take", 1.2)
+    return false
+  end
+  -- Mirror the smart-spacing decision made when the original text landed.
+  if take.pastedText:match("^%s") then other = " " .. other end
+
+  if axSelectPastedText(take.pastedText) then
+    queueSwapPaste(take, other, otherVariant)
+    log.info("toggled pasted variant in place", { to = otherVariant })
+    archiveTake({ kind = "swap", to = otherVariant })
+    hs.alert.show("Murmur: " .. otherVariant, 0.8)
+  else
+    setClipboardTranscript(other)
+    log.info("variant toggle fell back to clipboard", { to = otherVariant })
+    hs.alert.show("Murmur: " .. otherVariant .. " version on clipboard — ⌘V",
+      1.6)
+  end
+  return true
+end
+
+-- Debug: evaluate JS inside the transcript panel and log the result.
+function M.panelDebug(js)
+  if not panel then
+    log.info("panel debug", { result = "no panel" })
+    return
+  end
+  panel:evaluateJavaScript(js, function(result, err)
+    log.info("panel debug", {
+      js = js,
+      result = hs.inspect(result),
+      err = err and hs.inspect(err) or nil,
+      ready = panelReady,
+      queued = #panelQueue,
+    })
+  end)
+end
+
+-- Debug/introspection: both versions of the newest take.
+function M.lastTranscripts()
+  return {
+    raw = lastTake.raw,
+    cleaned = lastTake.cleaned,
+    polished = lastTake.polished,
+    pastedVariant = lastTake.pastedVariant,
+    at = lastTake.at,
+  }
+end
+
+-- Debug: drive the transcript panel with synthetic hypotheses — no mic, no
+-- daemon, no network — to inspect growth, styling, scrolling, and (with the
+-- stubbed live polish) segments visibly rewriting raw -> polished:
+--   hs -c "require('murmur').previewPanel()"
+--   hs -c "require('murmur').previewPanel({ livePolish = false })"  -- legacy
+function M.previewPanel(opts)
+  opts = opts or {}
+  if state ~= "idle" then return end
+  local sample = "Um, so this is, uh, a live preview of the Murmur panel. "
+    .. "Words appear as they are recognized, you know, and settle into "
+    .. "committed text once stable. Ship it on Tuesday, no, Wednesday. "
+    .. "Sentences polish themselves while later words are, um, still being "
+    .. "spoken, so the transcript upgrades in place as you watch it. One "
+    .. "segment stays raw on purpose, because its polish call gets rejected "
+    .. "by the validator. Once the transcript grows past the panel's maximum "
+    .. "height it scrolls, pinned to the newest words. Scroll up to release "
+    .. "the pin and read earlier text, then click the jump-to-live button to "
+    .. "re-pin. This preview hides itself a few seconds after the last word."
+  local words = {}
+  for w in sample:gmatch("%S+") do words[#words + 1] = w end
+  stopPreview()
+  -- Stubbed transport: canned edits after a delay. Call 3 outlasts the call
+  -- timeout (exercises fail + retry), one call returns a validator-rejected
+  -- result (its segments stay raw).
+  local previewCall = 0
+  livePolishTransport = function(dispatch, onDone, onFail)
+    previewCall = previewCall + 1
+    local n = previewCall
+    local delay = n == 3 and 3.0 or 0.8
+    previewTimers[#previewTimers + 1] = hs.timer.doAfter(delay, function()
+      if n == 4 then
+        onDone("See https://example.com for details")
+        return
+      end
+      local out = dispatch.text
+        :gsub("%f[%w][Uu]m%f[%W],?%s*", ""):gsub("%f[%w][Uu]h%f[%W],?%s*", "")
+        :gsub("%f[%w][Yy]ou know%f[%W],?%s*", "")
+        :gsub("Tuesday, no, Wednesday", "Wednesday")
+        :gsub("^%l", string.upper)
+        :gsub("^[,%s]+", "")
+      onDone(out)
+    end)
+  end
+  resetLivePanel()
+  if opts.livePolish == false then livePolisher = nil end
+  if not showTranscriptPanel() then
+    stopPreview()
+    hs.alert.show("Murmur: transcript panel unavailable", 1.5)
+    return
+  end
+  showPill("Listening", true)
+  local i = 0
+  previewTicker = hs.timer.doEvery(0.14, function()
+    i = i + 1
+    if i > #words then
+      if previewTicker then previewTicker:stop(); previewTicker = nil end
+      if liveView then
+        liveView:commitAll()
+        if livePolisher then
+          local now = hs.timer.secondsSinceEpoch()
+          livePolisher:feed(liveView:snapshot().committed, now)
+          livePolisher:finishTake(now)
+          dispatchLivePolish()
+        end
+        renderPanel()
+      end
+      previewTimers[#previewTimers + 1] = hs.timer.doAfter(8, function()
+        stopPreview()
+        if state == "idle" then hidePill() end
+      end)
+      return
+    end
+    local hyp = table.concat(words, " ", 1, i)
+    -- Every seventh hypothesis mangles its newest word, then the next one
+    -- corrects it — the tail revises, committed text never does.
+    if i % 7 == 3 then
+      hyp = hyp:gsub("%S+$", function(w) return w:sub(1, -2) .. "-uh" end)
+    end
+    feedLivePanel(hyp, "preview")
+  end)
+end
+
+-- Resolve the real source directory (murmur.lua in ~/.hammerspoon is a
+-- symlink into the checkout; tools/ lives next to the real file).
+local function murmurSourceDir()
+  local src = debug.getinfo(1, "S").source:match("^@(.+)$")
+  if not src then return nil end
+  local resolved = hs.fs.pathToAbsolute(src) or src
+  return resolved:match("^(.*)/")
+end
+
+local selfEvalTimer = nil
+local selfEvalTask = nil
+
+-- Run the nightly self-eval now (also called by the scheduled timer).
+-- `date` optionally names a YYYY-MM-DD day; default is decided by the
+-- script (the day that ended most recently).
+function M.selfEval(date)
+  if selfEvalTask and selfEvalTask:isRunning() then
+    log.warn("self-eval already running")
+    return false
+  end
+  local dir = murmurSourceDir()
+  local script = dir and (dir .. "/tools/self_eval.lua")
+  if not script or not hs.fs.attributes(script) then
+    log.warn("self-eval script not found", { script = tostring(script) })
+    return false
+  end
+  if not hs.fs.attributes(config.selfEvalLua) then
+    log.warn("self-eval lua interpreter not found", {
+      lua = config.selfEvalLua,
+    })
+    return false
+  end
+  local args = { script }
+  if date then args[#args + 1] = tostring(date) end
+  selfEvalTask = hs.task.new(config.selfEvalLua,
+    function(exitCode, stdOut, stdErr)
+      selfEvalTask = nil
+      local summary = tostring(stdOut or ""):match("([^\n]+)%s*$") or ""
+      log.info("self-eval finished", {
+        exitCode = exitCode, summary = summary,
+        stderr = tostring(stdErr or ""):sub(1, 200),
+      })
+      pcall(function()
+        hs.notify.new({
+          title = "Murmur self-eval",
+          informativeText = summary ~= "" and summary
+            or ("exit " .. tostring(exitCode)),
+        }):send()
+      end)
+    end, args)
+  selfEvalTask:start()
+  log.info("self-eval started", { script = script, date = date })
+  return true
+end
+
 function M.start()
-  startTriggerTap()
+  -- ✦ Settings window overlay (loadout-settings) wins over file defaults.
+  pcall(function() require("settings_overlay").apply("murmur", config) end)
+  -- Caps+M through QuickShots' shared Caps tap is the trigger. If that tap
+  -- isn't available and no modifier trigger is configured, fall back to
+  -- Right⌘ so dictation is never left without a hotkey.
+  local modifierTrigger = config.trigger
+  if not startCapsTrigger() and type(modifierTrigger) ~= "table" then
+    if type(config.capsTrigger) == "table" then
+      modifierTrigger = { {}, "rightcmd" }
+      log.warn("caps tap unavailable; falling back to rightcmd trigger")
+      pcall(function()
+        hs.alert.show("murmur: Caps tap unavailable — using Right⌘", 3)
+      end)
+    end
+  end
+  startTriggerTap(modifierTrigger)
   startInputWatcher()
+  if config.selfEval then
+    selfEvalTimer = hs.timer.doAt(config.selfEvalTime or "03:30", "1d",
+      function() M.selfEval() end)
+  end
+  -- Raw/polished toggle for the last paste: Caps+R through QuickShots'
+  -- shared Caps tap when available, otherwise ⌃⌥⌘D.
+  local okQS, qs = pcall(require, "quickshots")
+  if okQS and type(qs) == "table"
+      and type(qs.registerCapsAction) == "function" then
+    qs.registerCapsAction({}, "r", function() M.toggleRawPolished() end)
+    log.info("caps binding registered", { binding = "caps+r raw/polished" })
+  else
+    pcall(function()
+      hs.hotkey.bind({ "ctrl", "alt", "cmd" }, "d",
+        function() M.toggleRawPolished() end)
+      log.info("fallback binding registered", { binding = "⌃⌥⌘D raw/polished" })
+    end)
+  end
   -- Prewarm so the very first take starts instantly.
   if ensurePreferredInput() then
     hs.timer.doAfter(1.0, function()
@@ -1636,6 +3142,10 @@ function M.start()
     spawnDaemon()
   end
   log.info("started", {
+    capsTrigger = type(config.capsTrigger) == "table"
+      and ("caps+" .. tostring(config.capsTrigger[2])) or "off",
+    trigger = type(modifierTrigger) == "table"
+      and tostring(modifierTrigger[2]) or "off",
     autoRefine = config.autoRefine,
     autoRefineMinChars = config.autoRefineMinChars,
     autoRefineMinWords = config.autoRefineMinWords,
@@ -1691,6 +3201,13 @@ function M.status()
     aiModel = lastAIModel,
     aiProvider = lastAIProvider,
     lastAIReason = lastAIReason,
+    transcriptPanel = config.transcriptPanel,
+    transcriptPanelVisible = panelVisible,
+    lastPastedVariant = lastTake.pastedVariant,
+    lastPolishAvailable = lastTake.polished ~= nil,
+    livePolish = config.livePolish,
+    livePolishActive = livePolisher ~= nil,
+    livePolishSegments = livePolisher and livePolisher:counts() or nil,
   }
 end
 
