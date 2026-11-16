@@ -36,15 +36,19 @@ understand and accept that tradeoff. The default is off.
 
 ## Install
 
-From the repo root:
+Complete Loadout's [base-app prerequisites](../../PREREQUISITES.md#base-hammerspoon-apps) first.
 
 ```sh
+git clone https://github.com/josephvore/loadout.git ~/loadout
+cd ~/loadout
 apps/relay/install.sh
+open -a Hammerspoon
 ```
 
 The installer links `relay.lua` into `~/.hammerspoon/`, backing up anything it
 would replace. After it runs, reload Hammerspoon (menu-bar icon → **Reload
 Config**, or `hs -c 'hs.reload()'`).
+Keep the clone at this path because it is the live symlink target.
 
 ## Configuration
 
@@ -61,14 +65,26 @@ Edit the `config` block at the top of `relay.lua`:
 
 ## External tools
 
-These flows drive apps Relay expects to find, but doesn't bundle or replace.
-Everything here is optional — a flow that targets a missing app just won't do
-anything useful:
+Relay requires macOS 13 or later, [Hammerspoon](https://www.hammerspoon.org)
+1.1.1 or later, and Accessibility permission. Its flows integrate with optional tools that it
+does not install:
 
-- **iTerm** — the terminal the Claude Code flow opens.
-- **Google Chrome** — target of the side-panel and search flows.
-- **Obsidian** (or any markdown editor) — opens your quick-capture inbox.
-- **A dictation deeplink** (Raycast / Wispr Flow) — used to start voice input.
+| Tool | Needed for | Setup |
+|---|---|---|
+| [iTerm2](https://iterm2.com/downloads.html) | Voice Claude Code window | install the current macOS release |
+| [Claude Code](https://docs.anthropic.com/en/docs/claude-code/setup) (`claude`) | Voice Claude Code command | follow Anthropic's setup and authenticate |
+| [Google Chrome](https://www.google.com/chrome/) | side-panel and search flows | install the current macOS release |
+| Any markdown editor, optionally [Obsidian](https://obsidian.md/download) | opening the capture file | point `quickCaptureFile` at your inbox |
+| [Raycast](https://raycast.com) plus a dictation extension | optional Wispr deeplink | install/configure the extension and copy its deeplink |
+
+Missing optional tools do not stop Relay from loading; only their corresponding
+flows are unavailable.
+
+Relay reads the standard `$HOME` path but has no project-specific environment
+variables, `.env` file, or stored API keys. Relay itself makes no API request;
+the Chrome, Claude Code, Raycast, Wispr, and editor flows launch separately
+configured apps whose own authentication, network, billing, and data policies
+apply.
 
 ## Permissions
 
@@ -76,7 +92,17 @@ Relay sends keystrokes and activates apps, so macOS needs **Accessibility**
 granted to Hammerspoon: System Settings → Privacy & Security → Accessibility →
 toggle Hammerspoon on, then reload its config.
 
+## Verify and test
+
+Press `Ctrl+Alt+Cmd+N` and save a test capture; by default it is appended to
+`~/Documents/Quick Capture.md`. Verify other flows only after installing their
+tools. Run `./test.sh` from the repo root for source and installer checks.
+
+Suite-wide update and safe-uninstall guidance is in the
+[Loadout README](../../README.md#update-and-uninstall).
+
 ## About
 
-Relay is part of the [Loadout](../../README.md) suite. Licensed under
-[MIT](./LICENSE).
+Relay is part of the [Loadout](../../README.md) suite. See the
+[changelog](../../CHANGELOG.md) and [contributor guide](../../CONTRIBUTING.md).
+Licensed under [MIT](./LICENSE).

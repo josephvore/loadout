@@ -49,17 +49,32 @@ Reap is conservative by design.
 
 No API keys, no network access, and it writes no files.
 
+## Requirements
+
+- macOS and its built-in Bash 3.2 or later for terminal use.
+- Git is needed only to clone Loadout. If `git --version` is unavailable on a
+  fresh Mac, run `xcode-select --install` and finish the installer dialog.
+- [Raycast](https://raycast.com) only for the optional dropdown UI.
+- After cloning, no Hammerspoon, API key, environment variable, or additional
+  runtime package is needed.
+
 ## Install
 
-From the repository root:
-
 ```sh
+xcode-select --install  # only if git --version is unavailable; finish the dialog
+git clone https://github.com/josephvore/loadout.git ~/loadout
+cd ~/loadout
 apps/reap/install.sh
 ```
 
-This symlinks `reap.sh` into `~/.config/raycast/scripts/`, where it appears in
-Raycast as a Script Command with the mode dropdown. The install is idempotent
-and backs up anything it would replace.
+This symlinks `reap.sh` into `~/.config/raycast/scripts/`. The install is
+idempotent and backs up anything it would replace. Keep the clone at this path
+because it is the live symlink target.
+
+For the dropdown UI, install the current macOS release of
+[Raycast](https://raycast.com), then open Raycast Settings → Script Commands →
+**Add Script Directory** and choose `~/.config/raycast/scripts`. Raycast does not
+automatically index an arbitrary script directory.
 
 Raycast is required for the dropdown UI, but not for the script itself. From a
 terminal:
@@ -68,12 +83,25 @@ terminal:
 apps/reap/reap.sh [dry|all|mcp|servers]   # default: dry
 ```
 
+The terminal mode needs only macOS's built-in Bash 3.2 and standard command-line
+tools; it has no API keys, environment variables, network calls, or data files.
+
 To see the live picture Reap is working from:
 
 ```sh
 ps -axo pid,ppid,etime,command
 ```
 
+## Verify and test
+
+Run `apps/reap/reap.sh dry`; it must say that nothing was killed. Run the full
+repository checks with `./test.sh`.
+
+Suite-wide update and safe-uninstall guidance is in the
+[Loadout README](../../README.md#update-and-uninstall).
+
 ## Part of Loadout
 
-Reap is part of the [Loadout](../../README.md) suite. Licensed [MIT](./LICENSE).
+Reap is part of the [Loadout](../../README.md) suite. See the
+[changelog](../../CHANGELOG.md) and [contributor guide](../../CONTRIBUTING.md).
+Licensed [MIT](./LICENSE).

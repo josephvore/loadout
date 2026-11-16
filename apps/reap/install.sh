@@ -4,6 +4,7 @@
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091  # resolved from this script's absolute DIR
 . "${DIR}/../../lib/install-common.sh"
 
 RAYCAST_SCRIPTS="${HOME}/.config/raycast/scripts"
@@ -11,5 +12,7 @@ chmod +x "${DIR}/reap.sh"
 ld_link "${DIR}/reap.sh" "${RAYCAST_SCRIPTS}/reap.sh"
 
 echo
-echo "Reap is now available in Raycast (Script Commands). It also runs from a"
-echo "terminal: ${DIR}/reap.sh [dry|all|mcp|servers]  (default: dry run)."
+echo "To add Reap to Raycast, open Settings > Script Commands > Add Script"
+echo "Directory and select: ${RAYCAST_SCRIPTS}"
+echo "It also runs from a terminal:"
+echo "  ${DIR}/reap.sh [dry|all|mcp|servers]  (default: dry run)"
