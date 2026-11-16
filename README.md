@@ -15,7 +15,8 @@ whole loadout, or just the pieces you want.
 | [Murmur](https://github.com/josephvore/murmur) | On-device, push-to-talk dictation with an optional LLM cleanup pass | Wispr Flow · Superwhisper |
 | [Hone](apps/hone) | Rewrite the clipboard or a selection for clarity, in place, one keypress | Raycast AI · Grammarly rewrite |
 | [Relay](apps/relay) | Quick-launch / voice flows into your other tools | Alfred · Raycast workflows |
-| [Palette](apps/palette) | Searchable Caps+K menu of every shortcut, with rebind | CheatSheet · KeyCue |
+| [Unsub](apps/unsub) | Caps+U in Apple Mail unsubscribes from the selected message | Clean Email · Leave Me Alone |
+| [Palette](apps/palette) | Searchable Caps+K menu of every shortcut and app setting, with rebind | CheatSheet · KeyCue |
 | [Reap](apps/reap) | Reap leaked MCP + dev-server processes (safe dry-run default) | — |
 
 Two apps also have standalone repos for discovery: [QuickShots](https://github.com/josephvore/quickshots)
@@ -23,7 +24,9 @@ Two apps also have standalone repos for discovery: [QuickShots](https://github.c
 [Murmur](https://github.com/josephvore/murmur) (mirrored from `apps/murmur`, kept in sync from here).
 
 The software is free. Hone and Murmur's optional cleanup send text—not audio—to
-the API provider you configure, whose billing and data policies apply.
+the API provider you configure, whose billing and data policies apply. Unsub
+contacts the sender's unsubscribe link and, if you store an OpenAI key, sends
+unsubscribe-page text to OpenAI; see its [privacy notes](apps/unsub/README.md#privacy).
 
 ## Quick start
 
@@ -48,8 +51,9 @@ cd ~/loadout
 replace and **never installs system software for you**. It finishes independent
 installs but exits nonzero if Hammerspoon, QuickShots, or Murmur is unavailable.
 
-The installers use symlinks, so the clone is the live installation: keep it at
-the cloned path. Re-run the relevant installer after moving it.
+The installers use symlinks, so the clone is the live installation. It can live
+anywhere (`~/loadout` is just the default these docs use), but keep it at the
+cloned path; re-run the relevant installer after moving it.
 
 Then finish the human-only steps — launch Hammerspoon, grant permissions, enter
 optional API keys, remap Caps Lock, and register Reap's Raycast script directory.
@@ -63,7 +67,7 @@ With Lua 5.4+ and ShellCheck installed:
 ./test.sh
 ```
 
-This runs Murmur's deterministic suite, parses every Lua/shell source, checks
+This runs Murmur's deterministic suite, parses every Lua/Python/shell source, checks
 the bare-zsh fallback, runs Reap in dry mode, and enforces ShellCheck. See
 [CONTRIBUTING.md](CONTRIBUTING.md) and [CHANGELOG.md](CHANGELOG.md).
 
@@ -83,14 +87,15 @@ again. To uninstall, first run QuickShots' `caps-uninstall.sh` if you enabled th
 Caps Lock remap, quit Hammerspoon, and remove only symlinks whose `readlink`
 targets are inside the Loadout or QuickShots clone. `~/bin/hs-dictate` can then
 be removed separately. Murmur's glossary, corrections, snippets, model cache,
-and rotating logs are intentionally retained unless you explicitly remove
-them. Remove either clone only after its live symlinks are gone.
+rotating logs, and the settings saved in `~/.hammerspoon/settings/` are
+intentionally retained unless you explicitly remove them. Remove either clone only after its live symlinks are gone.
 
 ## Why Caps Lock
 
 Most of these tools bind to **Caps Lock as a modifier** (Caps+A to capture, Caps+K
 for the menu, and so on). QuickShots remaps Caps Lock to a spare key (F18) and owns
-a shared event tap the other apps hook into (Murmur dictates on Caps+M). Apps that
+a shared event tap the other apps hook into (Murmur dictates on Caps+M, Unsub
+unsubscribes on Caps+U). Apps that
 don't use Caps (Relay on Ctrl+Alt+Cmd) bind their own collision-free hotkeys. See
 each app's README for its bindings.
 
@@ -103,7 +108,10 @@ loadout/
   SETUP.md              # full setup checklist / AI-agent runbook
   Brewfile              # optional: `brew bundle` to install CLI tools
   apps/<name>/          # each app: source, README, LICENSE, install.sh
+  settings/             # per-app settings schemas (Caps+K → Settings)
   lib/litelog/          # shared logging micro-library
+  lib/settings/         # settings tool that reads/writes those schemas
+  lib/settings_overlay/ # merges saved settings over each app's defaults
   lib/install-common.sh # shared installer helpers
   hammerspoon/init.lua  # canonical loader (loads whichever apps are installed)
   shell/                # optional zsh config

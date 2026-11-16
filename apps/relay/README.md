@@ -52,7 +52,10 @@ Keep the clone at this path because it is the live symlink target.
 
 ## Configuration
 
-Set `require("relay").config` fields in your private
+The quick-capture note, Claude command, skip-permissions flag, and Wispr
+auto-start are editable in Caps+K → Launchers → Settings (saved to
+`~/.hammerspoon/settings/relay.json`). For anything else, set
+`require("relay").config` fields in your private
 `~/.hammerspoon/loadout.local.lua` (see [local configuration](../../SETUP.md#local-configuration)):
 
 - `quickCaptureFile` — path to your notes inbox. Point it at wherever you keep

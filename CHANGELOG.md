@@ -18,8 +18,23 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Script Directory registration.
 - The optional zsh config leaves missing pyenv/eza/plugins alone, and the loader
   skips apps that are not installed.
+- `~/.hammerspoon/loadout.local.lua` now actually runs; previously the loader
+  never executed it.
 
 ### Added
+- **Unsub** (Caps+U): unsubscribe from the message selected in Apple Mail via
+  one-click, an unsubscribe email, or the sender's web page (optionally judged
+  by OpenAI), falling back to the browser. Never moves or deletes mail;
+  `hammerspoon://unsub` is always a dry run.
+- **Palette** Shortcuts and Settings tabs per app, with settings edited in the
+  window; a resizable window with close and zoom buttons, a right-click menu,
+  and Esc to close.
+- Shared settings schemas (`settings/<app>.schema.json`), the
+  `lib/settings/loadout-settings` tool (built by Palette's installer), and
+  `settings_overlay.lua`, linked by every app installer to merge saved values
+  over each app's defaults.
+- `loadout.local.lua` can start private modules (`return { apps = { ... } }`)
+  and list their shortcuts in Caps+K with `require("palette").addApp`.
 - **Loadout** suite structure: each tool is now a self-contained, individually
   named app under `apps/` — **Murmur** (dictation), **Hone** (AI text refine),
   **Relay** (flows), **Palette** (Caps+K menu), **Reap** (process reaper) —
@@ -51,6 +66,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `--dangerously-skip-permissions` flag is now opt-in.
 - Shell config guards every tool init so it no longer errors on a bare machine,
   and machine-specific paths were removed.
+- Settings saved from Caps+K are stored in `~/.hammerspoon/settings/<app>.json`
+  instead of inside the clone, and the clone can live anywhere (`~/loadout`
+  remains the documented default).
+- **Murmur**'s nightly self-eval is off by default (enable with
+  `selfEval = true` in `loadout.local.lua`), and the fixtures it collects are
+  written to `~/.hammerspoon/murmur/` instead of the repository.
 
 ### Migrated from
 - The former personal `dotfiles` repo. History is preserved.

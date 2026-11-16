@@ -4,7 +4,7 @@ about: Suggest an idea or improvement
 labels: enhancement
 ---
 
-**App**: (QuickShots / Murmur / Hone / Relay / Palette / Reap / suite-wide)
+**App**: (QuickShots / Murmur / Hone / Relay / Unsub / Palette / Reap / suite-wide)
 
 **The problem**
 What are you trying to do that's awkward or impossible today?
