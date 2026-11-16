@@ -1,0 +1,207 @@
+#!/bin/bash
+# snag — EquipFlow bug-capture CLI. Owns the recording lifecycle so no
+# long-lived process (Hammerspoon included) is load-bearing: state lives in
+# files, the recorder is a detached ffmpeg, and completed captures are
+# queued for the launchd pipeline watcher.
+#
+#   snag record [--screen N] [--crop W:H:X:Y]   start recording (crop in px)
+#   snag stop                                    stop, finalize, queue pipeline
+#   snag cancel                                  stop and discard
+#   snag status                                  human/scriptable state
+#   snag ingest <file> [--mode report|verify|meet]
+#   snag ingest --pick                           stage an external video (Meet
+#                                                recording etc.) for the pipeline
+#   snag mode [report|verify|meet]               get/set pipeline mode
+#   snag settings                                open the settings window
+set -u
+
+SNAG_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+[ "${SNAG_CONF:-}" != "off" ] && [ -f "$SNAG_DIR/snag.conf" ] && . "$SNAG_DIR/snag.conf"
+CAPTURES="${SNAG_CAPTURE_ROOT:-$SNAG_DIR/captures}"
+QUEUE="$SNAG_DIR/queue"
+STATE="$SNAG_DIR/state"
+REC_STATE="$STATE/recording.json"
+FFMPEG="${SNAG_FFMPEG:-/opt/homebrew/bin/ffmpeg}"
+FFPROBE="${SNAG_FFPROBE:-/opt/homebrew/bin/ffprobe}"
+MAX_SECONDS="${SNAG_MAX_SECONDS:-600}"
+AUDIO_DEVICE="${SNAG_AUDIO:-default}"
+JQ=/usr/bin/jq
+
+mkdir -p "$CAPTURES" "$QUEUE" "$STATE"
+
+die() { echo "snag: $1" >&2; exit 1; }
+
+# User-facing feedback for flows launched without a terminal (✦ menu picker).
+notify() {
+  local tn=/opt/homebrew/bin/terminal-notifier
+  if [ -x "$tn" ]; then
+    "$tn" -group snag -title "$1" -message "$2"
+  else
+    /usr/bin/osascript -e "display notification \"${2//\"/}\" with title \"${1//\"/}\"" 2>/dev/null
+  fi
+}
+
+recorder_pid() {
+  [ -f "$REC_STATE" ] || return 1
+  local pid
+  pid=$($JQ -r '.pid' "$REC_STATE" 2>/dev/null) || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  echo "$pid"
+}
+
+# Front app + Chrome tab, best effort. Runs at stop so it reflects the take.
+capture_context() {
+  local front chrome_url chrome_title
+  front=$(/usr/bin/osascript -e 'tell application "System Events" to get name of first process whose frontmost is true' 2>/dev/null || echo "")
+  chrome_url=$(/usr/bin/osascript -e 'tell application "Google Chrome" to if it is running then get URL of active tab of front window' 2>/dev/null || echo "")
+  chrome_title=$(/usr/bin/osascript -e 'tell application "Google Chrome" to if it is running then get title of active tab of front window' 2>/dev/null || echo "")
+  $JQ -n --arg f "$front" --arg u "$chrome_url" --arg t "$chrome_title" \
+    '{frontApp: $f, chromeUrl: $u, chromeTitle: $t} | with_entries(select(.value != ""))'
+}
+
+cmd_record() {
+  recorder_pid > /dev/null && die "already recording (snag stop first)"
+  local screen=0 crop=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --screen) screen="$2"; shift 2 ;;
+      --crop)   crop="$2"; shift 2 ;;
+      *) die "unknown flag: $1" ;;
+    esac
+  done
+  local stamp dir
+  stamp=$(date +%Y%m%d-%H%M%S)
+  dir="$CAPTURES/$stamp"
+  mkdir -p "$dir"
+  local args=(-y -loglevel error -f avfoundation -capture_cursor 1 -framerate 30
+    -i "Capture screen ${screen}:${AUDIO_DEVICE}" -t "$MAX_SECONDS")
+  [ -n "$crop" ] && args+=(-vf "crop=$crop")
+  args+=(-c:v h264_videotoolbox -b:v 4000k -c:a aac "$dir/recording.mov")
+  nohup "$FFMPEG" "${args[@]}" > "$dir/recorder.log" 2>&1 &
+  local pid=$!
+  disown "$pid" 2>/dev/null || true
+  $JQ -n --argjson pid "$pid" --arg dir "$dir" --argjson t "$(date +%s)" \
+    --argjson screen "$screen" \
+    '{pid: $pid, dir: $dir, startedAt: $t, screen: $screen}' > "$REC_STATE"
+  echo "recording -> $dir (pid $pid)"
+}
+
+finalize() { # $1 = keep|discard
+  local pid dir started
+  pid=$(recorder_pid) || { rm -f "$REC_STATE"; die "not recording"; }
+  dir=$($JQ -r '.dir' "$REC_STATE")
+  started=$($JQ -r '.startedAt' "$REC_STATE")
+  kill -INT "$pid" 2>/dev/null
+  for _ in $(seq 1 30); do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
+  kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null
+  rm -f "$REC_STATE"
+
+  if [ "$1" = "discard" ]; then
+    rm -rf "$dir"
+    echo "discarded"
+    return 0
+  fi
+  [ -f "$dir/recording.mov" ] || { rm -rf "$dir"; die "no recording produced — see recorder.log (dir removed)"; }
+  capture_context | $JQ --argjson s "$started" --argjson e "$(date +%s)" \
+    '. + {startedAt: $s, endedAt: $e}' > "$dir/meta.json"
+  echo "$dir" > "$QUEUE/$(basename "$dir")"
+  echo "queued -> $dir"
+}
+
+# Stage an external video (Google Meet recording etc.) as a capture dir and
+# queue it for the pipeline. The original file is only ever read.
+cmd_ingest() {
+  local src="" mode="meet" pick=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --pick) pick=1; shift ;;
+      --mode) mode="${2:-}"; shift 2 ;;
+      -*) die "unknown flag: $1" ;;
+      *)  src="$1"; shift ;;
+    esac
+  done
+  case "$mode" in report|verify|meet) ;; *) die "mode must be report, verify, or meet" ;; esac
+  if [ "$pick" = 1 ]; then
+    src=$(/usr/bin/osascript \
+      -e 'tell me to activate' \
+      -e 'POSIX path of (choose file with prompt "Snag: analyze a video file")' \
+      2>/dev/null) || exit 0        # user cancelled the picker
+  fi
+  [ -n "$src" ] || die "usage: snag ingest <file> [--mode report|verify|meet]  (or: snag ingest --pick)"
+  [ -f "$src" ] || die "no such file: $src"
+
+  local duration mtime
+  duration=$("$FFPROBE" -v error -show_entries format=duration -of default=nw=1:nk=1 "$src" 2>/dev/null)
+  duration="${duration%.*}"
+  case "$duration" in ''|*[!0-9]*) die "not a video ffprobe can read: $src" ;; esac
+  mtime=$(/usr/bin/stat -f %m "$src")
+
+  local stamp dir
+  stamp=$(date +%Y%m%d-%H%M%S)
+  dir="$CAPTURES/$stamp"
+  mkdir -p "$dir"
+
+  # Meet recordings are H.264/AAC mp4 — remux to mov is instant and lossless.
+  # Codecs mov can't hold (VP9 webm etc.) fall back to a transcode.
+  if ! "$FFMPEG" -y -loglevel error -i "$src" -c copy "$dir/recording.mov" 2>"$dir/ingest.log"; then
+    echo "remux failed — transcoding (may take a while for long files)…"
+    "$FFMPEG" -y -loglevel error -i "$src" -c:v h264_videotoolbox -b:v 4000k -c:a aac \
+      "$dir/recording.mov" 2>>"$dir/ingest.log" \
+      || { notify "Snag: ingest failed" "could not convert $(basename "$src")"
+           die "conversion failed — see $dir/ingest.log"; }
+  fi
+
+  $JQ -n --argjson s "$((mtime - duration))" --argjson e "$mtime" --argjson d "$duration" \
+    --arg f "$(basename "$src")" --arg p "$src" --arg m "$mode" \
+    '{startedAt: $s, endedAt: $e, durationSeconds: $d, source: "ingest",
+      originalFile: $f, originalPath: $p, mode: $m}' > "$dir/meta.json"
+  echo "$dir" > "$QUEUE/$stamp"
+  notify "Snag: video queued" "$(basename "$src") — ${duration}s, mode $mode"
+  echo "queued -> $dir (${duration}s, mode $mode)"
+}
+
+cmd_status() {
+  local pid
+  if pid=$(recorder_pid); then
+    local dir started
+    dir=$($JQ -r '.dir' "$REC_STATE"); started=$($JQ -r '.startedAt' "$REC_STATE")
+    echo "recording: pid=$pid elapsed=$(( $(date +%s) - started ))s dir=$dir"
+  else
+    echo "recording: no"
+  fi
+  echo "queued: $(command ls "$QUEUE" 2>/dev/null | wc -l | tr -d ' ')"
+  local d
+  for d in $(command ls -t "$CAPTURES" 2>/dev/null | head -5); do
+    if [ -f "$CAPTURES/$d/report.md" ]; then echo "capture: $d report"
+    elif [ -f "$CAPTURES/$d/result.json" ]; then echo "capture: $d done"
+    else echo "capture: $d processing"
+    fi
+  done
+}
+
+cmd_mode() {
+  local conf="$SNAG_DIR/snag.conf"
+  if [ $# -eq 0 ]; then
+    sed -n 's/^SNAG_MODE=//p' "$conf"
+    return 0
+  fi
+  case "$1" in
+    report|verify|meet) sed -i '' "s/^SNAG_MODE=.*/SNAG_MODE=$1/" "$conf"; echo "mode: $1" ;;
+    *) die "mode must be report, verify, or meet" ;;
+  esac
+}
+
+case "${1:-}" in
+  record) shift; cmd_record "$@" ;;
+  stop)   finalize keep ;;
+  cancel) finalize discard ;;
+  status) cmd_status ;;
+  ingest) shift; cmd_ingest "$@" ;;
+  mode)   shift; cmd_mode "$@" ;;
+  settings)
+    LS="$HOME/loadout/lib/settings/loadout-settings"
+    [ -x "$LS" ] || die "loadout-settings not built (see ~/loadout/lib/settings/build.sh)"
+    nohup "$LS" snag > /dev/null 2>&1 &
+    ;;
+  *) die "usage: snag record|stop|cancel|status|ingest|mode|settings" ;;
+esac
