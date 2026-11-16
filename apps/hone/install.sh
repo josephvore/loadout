@@ -4,6 +4,7 @@
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091  # resolved from this script's absolute DIR
 . "${DIR}/../../lib/install-common.sh"
 
 ld_install_core "${DIR}/../.."
@@ -11,7 +12,8 @@ ld_link "${DIR}/hone.lua" "${HAMMER_DIR}/hone.lua"
 
 echo
 echo "Hone reads API keys from the macOS Keychain — no key is stored in the repo."
-echo "Add at least one (OpenAI, or Groq/Cerebras for faster cleanup):"
+echo "Add OpenAI for Hone's manual hotkeys; Groq/Cerebras are optional"
+echo "alternatives for Murmur's dictation cleanup:"
 echo "  ${DIR}/setup-keys.sh"
 echo
 ld_reload_hint
