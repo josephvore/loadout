@@ -1,0 +1,12 @@
+{
+  "app": "unsub",
+  "title": "Unsub — Mail Unsubscribe",
+  "format": "json",
+  "target": "~/loadout/settings/unsub.settings.json",
+  "postSave": ["/opt/homebrew/bin/hs", "-c", "hs.reload()"],
+  "fields": [
+    {"key": "mailtoMode", "label": "Unsubscribe emails", "type": "enum", "options": ["send", "compose"], "default": "send", "help": "send = goes out automatically; compose = opens a draft for you to send"},
+    {"key": "useAI", "label": "Use AI on unsubscribe pages", "type": "bool", "default": "true", "help": "Sends the page text to OpenAI to pick the right option"},
+    {"key": "aiModel", "label": "AI model", "type": "string", "default": "gpt-5.4"}
+  ]
+}

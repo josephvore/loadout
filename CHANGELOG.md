@@ -6,6 +6,19 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- **Hone** now prompts for Keychain secrets correctly and uses current Groq and
+  Cerebras cleanup models without hidden reasoning.
+- **Murmur** creates `~/bin`, backs up a differing daemon, links daemon source
+  non-destructively, and reports a degraded build as failure.
+- Installers now refuse symlinked Hammerspoon config directories and unusable
+  user-data destinations instead of writing through managed paths or claiming
+  success with broken state.
+- **Reap** runs on macOS's built-in Bash 3.2 and explains Raycast's required
+  Script Directory registration.
+- The optional zsh config leaves missing pyenv/eza/plugins alone, and the loader
+  skips apps that are not installed.
+
 ### Added
 - **Loadout** suite structure: each tool is now a self-contained, individually
   named app under `apps/` — **Murmur** (dictation), **Hone** (AI text refine),
@@ -20,6 +33,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   shellcheck).
 
 ### Changed
+- Fresh-Mac requirements, model downloads, local/cloud boundaries, API-key
+  provisioning, automatic-cleanup defaults, local transcript logs, updates,
+  uninstall behavior, tests, and human-only steps are documented explicitly.
+- `./test.sh` is the single local/CI test entrypoint, with an additional macOS
+  smoke job for built-in Bash and zsh.
 - Shell environment files are private copies, never tracked symlink targets;
   existing environments are preserved when installing or reinstalling.
 - Machine-specific shell and Hammerspoon settings have local override files.

@@ -119,13 +119,13 @@ done
 # --- EXCLUSION 1: self + full ancestor (ppid) chain ---
 # Walk from $$ up to PID 1, collecting every PID. These are space-delimited and
 # matched as whole words so we never substring-match a PID by accident.
-declare -A EXCLUDE_PIDS=()
+EXCLUDE_PIDS=" "
 walk_pid="$$"
 # guard against loops / missing data; the chain is short in practice
 for _ in $(seq 1 64); do
   [ -z "$walk_pid" ] && break
   [ "$walk_pid" = "0" ] && break
-  EXCLUDE_PIDS["$walk_pid"]=1
+  EXCLUDE_PIDS="${EXCLUDE_PIDS}${walk_pid} "
   [ "$walk_pid" = "1" ] && break
   parent="$(ps -o ppid= -p "$walk_pid" 2>/dev/null | tr -d ' ')"
   [ -z "$parent" ] && break
@@ -161,9 +161,9 @@ while IFS= read -r line; do
   esac
 
   # EXCLUSION 1: self / ancestor chain
-  if [ -n "${EXCLUDE_PIDS[$pid]:-}" ]; then
-    continue
-  fi
+  case "$EXCLUDE_PIDS" in
+    *" $pid "*) continue ;;
+  esac
 
   # Does the command match any active TARGET pattern?
   if ! printf '%s' "$cmd" | grep -Eq "$JOINED_TARGETS"; then
@@ -178,7 +178,7 @@ while IFS= read -r line; do
   # EXCLUSION 3 (belt-and-suspenders): never match this script's own filename,
   # in case it is itself being scanned while running.
   case "$cmd" in
-    *kill-dev-servers.sh*) continue ;;
+    *kill-dev-servers.sh*|*reap.sh*) continue ;;
   esac
 
   MATCH_PIDS+=("$pid")

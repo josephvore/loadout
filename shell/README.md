@@ -17,14 +17,20 @@ optional tool list (and the [Brewfile](../Brewfile) to install them).
 
 ## Install
 
+Review the optional dependencies in [PREREQUISITES.md](../PREREQUISITES.md), then
+from the repository root:
+
 ```sh
-./install.sh          # or, from the repo root:  ./bootstrap.sh --with-shell
+git clone https://github.com/josephvore/loadout.git ~/loadout
+cd ~/loadout
+shell/install.sh      # or install the suite with: ./bootstrap.sh --with-shell
 ```
 
 Idempotent; backs up existing `~/.zshrc` and `~/.zprofile` before linking them.
 An existing `~/.zshenv` is always preserved, including symlinks. New environment
 files are private copies with owner-only permissions; they never link into Git.
-Open a new terminal (or `source ~/.zshrc`) to load it.
+Open a new terminal (or `source ~/.zshrc`) to load it. Verify all repository
+checks with `./test.sh`; changes are recorded in the root [changelog](../CHANGELOG.md).
 
 ## Private settings
 

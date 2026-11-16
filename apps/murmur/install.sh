@@ -20,24 +20,28 @@ ld_copy_if_absent "${DIR}/data/dictation_glossary.txt"    "${HAMMER_DIR}/murmur/
 ld_copy_if_absent "${DIR}/data/dictation_corrections.tsv" "${HAMMER_DIR}/murmur/dictation_corrections.tsv"
 ld_copy_if_absent "${DIR}/data/dictation_snippets.tsv"    "${HAMMER_DIR}/murmur/dictation_snippets.tsv"
 
-# Daemon source, so it can be rebuilt from ~/.hammerspoon later.
-rm -rf "${HAMMER_DIR}/murmur/hs-dictate"
-mkdir -p "${HAMMER_DIR}/murmur/hs-dictate"
-cp -R "${DIR}/hs-dictate/" "${HAMMER_DIR}/murmur/hs-dictate/"
+# Daemon source, so it can be rebuilt from ~/.hammerspoon later. Link instead
+# of deleting/copying the directory: re-installs are non-destructive and the
+# checked-out source remains the single source of truth.
+ld_link "${DIR}/hs-dictate" "${HAMMER_DIR}/murmur/hs-dictate"
 
 # Build the Swift daemon into ~/bin/hs-dictate. Requires the Swift 6 toolchain
-# (Xcode CLT) and the macOS 26 SDK — see PREREQUISITES.md. Non-fatal: if the
-# toolchain is missing, the rest of the install still completes.
+# (Xcode CLT) and the macOS 26 SDK — see PREREQUISITES.md. The links and data
+# remain installed if the build fails, but this command returns a failure so a
+# caller cannot mistake a degraded Murmur install for a working one.
 echo
+build_status=0
 if command -v swift >/dev/null 2>&1; then
-  echo "Building hs-dictate (first build downloads FluidAudio + models; this takes a while)..."
+  echo "Building hs-dictate (the first build downloads Swift package sources; speech models download on first use)..."
   if "${HAMMER_DIR}/murmur/hs-dictate/build.sh"; then
     echo "Built ~/bin/hs-dictate"
   else
+    build_status=1
     echo "WARNING: hs-dictate build failed. Fix the Swift toolchain, then run:" >&2
     echo "  ~/.hammerspoon/murmur/hs-dictate/build.sh" >&2
   fi
 else
+  build_status=1
   echo "WARNING: 'swift' not found — skipping the hs-dictate build." >&2
   echo "Install the Xcode Command Line Tools, then run:" >&2
   echo "  ~/.hammerspoon/murmur/hs-dictate/build.sh" >&2
@@ -45,3 +49,4 @@ fi
 
 echo
 ld_reload_hint
+exit "$build_status"

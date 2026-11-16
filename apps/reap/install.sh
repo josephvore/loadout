@@ -12,5 +12,7 @@ chmod +x "${DIR}/reap.sh"
 ld_link "${DIR}/reap.sh" "${RAYCAST_SCRIPTS}/reap.sh"
 
 echo
-echo "Reap is now available in Raycast (Script Commands). It also runs from a"
-echo "terminal: ${DIR}/reap.sh [dry|all|mcp|servers]  (default: dry run)."
+echo "To add Reap to Raycast, open Settings > Script Commands > Add Script"
+echo "Directory and select: ${RAYCAST_SCRIPTS}"
+echo "It also runs from a terminal:"
+echo "  ${DIR}/reap.sh [dry|all|mcp|servers]  (default: dry run)"

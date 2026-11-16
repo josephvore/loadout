@@ -18,6 +18,14 @@ dictation_proper_nouns.tsv
 .env
 .env.*
 
+# --- Local data & build output (never commit user data) ---
+__pycache__/
+apps/snag/captures/
+apps/snag/state/
+apps/snag/snag.local.conf
+lib/settings/loadout-settings
+settings/*.settings.json
+
 # Private shell environments and local configuration (at any depth).
 .zshenv
 .zshrc.local

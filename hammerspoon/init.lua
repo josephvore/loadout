@@ -16,7 +16,18 @@
 local logging = require("litelog")
 local initLog = logging.new("init")
 
+local function moduleInstalled(name)
+  if package.searchpath then
+    return package.searchpath(name, package.path) ~= nil
+  end
+  return hs.fs.attributes(hs.configdir .. "/" .. name .. ".lua") ~= nil
+end
+
 local function loadApp(name, fn, failAlert)
+  if not moduleInstalled(name) then
+    initLog.info("skipped app", { app = name, reason = "not installed" })
+    return false
+  end
   local appLog = logging.new(name)
   initLog.info("loading app", { app = name })
   local ok, err = xpcall(fn, debug.traceback)
@@ -55,6 +66,12 @@ loadApp("murmur", function() require("murmur").start() end)
 
 -- Relay (quick-launch / voice flows).
 loadApp("relay", function() require("relay").start() end)
+
+-- Snag (EquipFlow bug capture → verified GitHub issue).
+loadApp("snag", function() require("snag").start() end)
+
+-- Unsub (Caps+U: unsubscribe from the selected Apple Mail message).
+loadApp("unsub", function() require("unsub").start() end)
 
 -- Palette (Caps+K searchable shortcut menu) — last, so it sees every module.
 loadApp("palette", function() require("palette").start() end,
