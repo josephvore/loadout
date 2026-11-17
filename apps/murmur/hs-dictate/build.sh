@@ -24,6 +24,7 @@ if [ -e "$dest" ] || [ -L "$dest" ]; then
   # identical bytes, back up the link itself and replace it with this build.
   if [ ! -L "$dest" ] && cmp -s "$staged" "$dest"; then
     rm -f "$staged"
+    touch "$dest" # newer than its sources again, for doctor.sh and update.sh
     trap - EXIT
     echo "up to date: $dest"
     exit 0

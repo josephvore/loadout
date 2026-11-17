@@ -77,7 +77,9 @@ for ((i = 0; i < ${#files[@]}; i++)); do
     content "$f" | LC_ALL=C grep -nE "$HOME_PATH" | grep -vE "$HOME_PATH_OK" \
       | grep -v 'leak-check: allow' \
       | sed 's/^\([0-9]*\):.*/\1: home-directory path (use ~, $HOME or hs.configdir)/' || true
-    content "$f" | LC_ALL=C grep -noE "$EMAIL" | grep -vE "$EMAIL_OK" \
+    content "$f" | LC_ALL=C grep -nE "$EMAIL" | grep -v 'leak-check: allow' \
+      | LC_ALL=C grep -oE "^[0-9]+:|$EMAIL" | awk '/^[0-9]+:$/ { n = $0; next } { print n $0 }' \
+      | grep -vE "$EMAIL_OK" \
       | sed 's/^\([0-9]*\):.*/\1: email address (use an example.com address)/' || true
   )
 done

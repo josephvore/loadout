@@ -329,8 +329,23 @@ actor Dictator {
                              kAudioUnitScope_Global, 0, &current, &size)
         if status == noErr, current == wanted {
             pinnedDeviceID = wanted
+            // The input node keeps the previous device's client format; make
+            // its output match the new device or engine.start() fails -10868.
+            let hw = engine.inputNode.inputFormat(forBus: 0)
+            if hw.sampleRate > 0, hw.channelCount > 0 {
+                var asbd = AudioStreamBasicDescription(
+                    mSampleRate: hw.sampleRate,
+                    mFormatID: kAudioFormatLinearPCM,
+                    mFormatFlags: kAudioFormatFlagsNativeFloatPacked | kAudioFormatFlagIsNonInterleaved,
+                    mBytesPerPacket: 4, mFramesPerPacket: 1, mBytesPerFrame: 4,
+                    mChannelsPerFrame: hw.channelCount, mBitsPerChannel: 32, mReserved: 0)
+                AudioUnitSetProperty(unit, kAudioUnitProperty_StreamFormat,
+                                     kAudioUnitScope_Output, 1, &asbd,
+                                     UInt32(MemoryLayout<AudioStreamBasicDescription>.size))
+            }
+            let out = engine.inputNode.outputFormat(forBus: 0)
             emit(["event": "diagnostic",
-                  "message": "input device: \(audioDeviceName(wanted))"])
+                  "message": "input device: \(audioDeviceName(wanted)) (\(Int(hw.sampleRate)) Hz, \(hw.channelCount) ch; node \(Int(out.sampleRate)) Hz, \(out.channelCount) ch)"])
         } else {
             pinnedDeviceID = nil
             emit(["event": "diagnostic",
@@ -342,7 +357,7 @@ actor Dictator {
         guard let analyzerFormat else { throw audioError("engine not prepared") }
         pinInputDeviceIfNeeded()
         let input = engine.inputNode
-        let micFormat = input.outputFormat(forBus: 0)
+        var micFormat = input.outputFormat(forBus: 0)
         guard micFormat.sampleRate > 0 else {
             throw audioError("no usable microphone input (sample rate 0)")
         }
@@ -364,6 +379,10 @@ actor Dictator {
             input.removeTap(onBus: 0)
             engine.reset()
             pinInputDeviceIfNeeded()
+            micFormat = input.outputFormat(forBus: 0)
+            guard micFormat.sampleRate > 0 else {
+                throw audioError("no usable microphone input (sample rate 0)")
+            }
 
             // Convert whatever the input device provides (e.g. AirPods at
             // 24 kHz) to the analyzer's preferred format.
