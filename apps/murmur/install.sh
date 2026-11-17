@@ -31,7 +31,9 @@ ld_link "${DIR}/hs-dictate" "${HAMMER_DIR}/murmur/hs-dictate"
 # caller cannot mistake a degraded Murmur install for a working one.
 echo
 build_status=0
-if command -v swift >/dev/null 2>&1; then
+if [ "${LOADOUT_SKIP_BUILD:-0}" = 1 ]; then
+  echo "skip: hs-dictate build (LOADOUT_SKIP_BUILD=1)"
+elif command -v swift >/dev/null 2>&1; then
   echo "Building hs-dictate (the first build downloads Swift package sources; speech models download on first use)..."
   if "${HAMMER_DIR}/murmur/hs-dictate/build.sh"; then
     echo "Built ~/bin/hs-dictate"

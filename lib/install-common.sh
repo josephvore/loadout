@@ -79,6 +79,7 @@ ld_install_core() {
 # Needs the Swift toolchain; without it, settings stay read-only.
 ld_build_settings() {
   local root; root="$(cd "$1" && pwd)"
+  [ "${LOADOUT_SKIP_BUILD:-0}" = 1 ] && return 0
   if ! command -v swiftc >/dev/null 2>&1; then
     echo "skip: swiftc not found — install Xcode Command Line Tools to edit app settings"
     return 0
@@ -88,8 +89,9 @@ ld_build_settings() {
 
 # Ask Hammerspoon to reload its config, if the `hs` CLI is available.
 ld_reload_hint() {
+  [ "${LOADOUT_NO_RELOAD:-0}" = 1 ] && return 0
   if command -v hs >/dev/null 2>&1; then
-    hs -c 'hs.reload()' >/dev/null 2>&1 && echo "Reloaded Hammerspoon config." && return
+    hs -c 'hs.timer.doAfter(0.2, hs.reload)' >/dev/null 2>&1 && echo "Reloaded Hammerspoon config." && return
   fi
   echo "Reload Hammerspoon (menu-bar icon -> Reload Config) to pick up changes."
 }
