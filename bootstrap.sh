@@ -42,6 +42,13 @@ command -v git   >/dev/null 2>&1 || echo "  ! git not found (needed to fetch Qui
 command -v swift >/dev/null 2>&1 \
   || echo "  ! swift not found — Murmur's daemon won't build until you install Xcode CLT"
 
+# Contributors: block commits that add personal data or keys (repo-local).
+if command -v git >/dev/null 2>&1 && [ -d "${ROOT}/.git" ] \
+    && [ -z "$(git -C "${ROOT}" config core.hooksPath || true)" ]; then
+  git -C "${ROOT}" config core.hooksPath .githooks
+  echo "  enabled the leak-check pre-commit hook (.githooks)"
+fi
+
 # 2. Hammerspoon apps. Each installer links the shared loader + litelog, so
 #    running them in any order converges to the same state. Hone before Murmur
 #    (Hone is Murmur's cleanup engine).

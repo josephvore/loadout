@@ -6,6 +6,17 @@ on:
   pull_request:
 
 jobs:
+  secrets:
+    name: Secret scan (full history)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   test:
     name: Full source checks
     runs-on: ubuntu-latest
@@ -31,3 +42,15 @@ jobs:
           HOME="$test_home" BREW_PREFIX="$test_home/no-homebrew" \
             PATH="/usr/bin:/bin:/usr/sbin:/sbin" \
             /bin/zsh -f -c 'source shell/.zshrc; eval "ls -d / >/dev/null"'
+
+  swift:
+    name: Swift builds (hs-dictate, settings tool)
+    # hs-dictate targets macOS 26 (SpeechAnalyzer).
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build hs-dictate
+        working-directory: apps/murmur/hs-dictate
+        run: swift build -c release
+      - name: Settings tool build and round-trip
+        run: lib/settings/test-settings.sh

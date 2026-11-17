@@ -48,6 +48,9 @@ trap cleanup EXIT
 echo "-- whitespace integrity --"
 git diff --check
 
+echo "-- leak check --"
+lib/check-leaks.sh
+
 echo "-- Murmur replay tests --"
 "$LUA" apps/murmur/tests/test_murmur.lua
 
@@ -67,7 +70,11 @@ done < <(git ls-files '*.lua')
 
 SHELL_FILES=(
   bootstrap.sh
+  doctor.sh
+  update.sh
   test.sh
+  .githooks/pre-commit
+  lib/check-leaks.sh
   shell/install.sh
   lib/install-common.sh
   apps/hone/install.sh
@@ -80,12 +87,24 @@ SHELL_FILES=(
   apps/relay/install.sh
   apps/unsub/install.sh
   lib/settings/build.sh
+  lib/settings/test-settings.sh
 )
 
 echo "-- Python syntax checks --"
 while IFS= read -r file; do
   python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read(), sys.argv[1])' "$file"
 done < <(git ls-files '*.py')
+
+echo "-- Unsub tests --"
+python3 -I apps/unsub/tests/test_unsub.py 2>/dev/null \
+  || python3 -I apps/unsub/tests/test_unsub.py
+
+if [ "$(uname -s)" = "Darwin" ] && command -v swiftc >/dev/null 2>&1; then
+  echo "-- settings tool round-trip --"
+  lib/settings/test-settings.sh
+else
+  echo "SKIP: settings tool tests need macOS and swiftc."
+fi
 
 echo "-- shell parse checks --"
 for file in "${SHELL_FILES[@]}"; do
