@@ -56,7 +56,13 @@ loading — this is what keeps installs composable and avoids duplicate loaders.
 ./test.sh
 ```
 
-This runs the Lua regressions and parse checks, a stock-Bash Reap dry run, a
-bare-zsh smoke, and ShellCheck. Install its test dependencies with
+This runs the leak check, the Lua, Unsub, and settings-tool tests, parse
+checks, a stock-Bash Reap dry run, a bare-zsh smoke, and ShellCheck.
+
+`bootstrap.sh` turns on a pre-commit hook (`git config core.hooksPath
+.githooks`) that runs `lib/check-leaks.sh --staged`. It rejects home-directory
+paths, real email addresses, API keys, and generated or local-only files
+(dictation logs, `*.local.*`, saved settings, recordings). Mark a deliberate
+line with `leak-check: allow`. CI also scans the full history with gitleaks. Install its test dependencies with
 `brew install lua shellcheck`; CI runs the same entrypoint on every PR. Keep
 documentation clear and concise — match the tone of the existing READMEs.
