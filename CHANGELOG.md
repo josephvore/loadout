@@ -24,7 +24,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Hone** stops retrying a provider that answers 401/402/403/404 until reload and
   says so once, instead of failing on every dictation.
 - **Unsub** checks every redirect, form action, and one-click POST target, not
-  just the first link, and refuses names that resolve to private addresses.
+  just the first link, refuses names that resolve to private addresses, and
+  only fetches on the standard HTTPS port.
 - **Hone** now prompts for Keychain secrets correctly and uses current Groq and
   Cerebras cleanup models (`qwen/qwen3.6-27b`, `gpt-oss-120b`) with minimal reasoning.
 - **Murmur** creates `~/bin`, backs up a differing daemon, links daemon source
