@@ -60,7 +60,8 @@ newer_than() {
 
 echo "-- rebuilding changed tools --"
 dictate_dir="${ROOT}/apps/murmur/hs-dictate"
-if newer_than "${HOME}/bin/hs-dictate" "${dictate_dir}"/*.swift "${dictate_dir}/Package.swift"; then
+if newer_than "${HOME}/bin/hs-dictate" "${dictate_dir}"/*.swift \
+    "${dictate_dir}/Package.swift" "${dictate_dir}/Package.resolved"; then
   if command -v swift >/dev/null 2>&1; then
     "${dictate_dir}/build.sh"
   else

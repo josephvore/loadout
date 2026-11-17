@@ -225,9 +225,10 @@ local function keychainKey(service)
   return cachedKeys[service] or nil
 end
 
--- Providers that answered 401/403/404 (bad key, retired model, wrong URL).
--- Retrying them cannot succeed, so they are skipped until the next reload
--- and the user is told once. 429s and timeouts only cool (see refineText).
+-- Providers that answered 401/402/403/404 (bad key, unpaid account, retired
+-- model, wrong URL). Retrying them cannot succeed, so they are skipped until
+-- the next reload and the user is told once. A 429 only cools the provider;
+-- other failures just fall through to the next one (see refineText).
 local brokenProviders = {}
 
 local function providerBroken(name) return brokenProviders[name] ~= nil end
@@ -241,7 +242,7 @@ local function markProviderBroken(name, msg)
   })
   if hs and hs.alert then
     hs.alert.show("Hone: " .. name .. " failed (" .. tostring(msg)
-      .. "). Skipping it until reload; check its key and model.", 5)
+      .. "). Skipping it until reload; check its key, billing and model.", 5)
   end
 end
 

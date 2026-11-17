@@ -33,7 +33,9 @@ hs_eval() {
   out="$(mktemp "${TMPDIR:-/tmp}/loadout-doctor.XXXXXX")"
   hs -c "$2" >"$out" 2>/dev/null &
   pid=$!
-  ( sleep "$1"; kill "$pid" 2>/dev/null ) &
+  # The timer's output goes to /dev/null so its sleep can't hold a caller's
+  # $(...) open after the hs answer arrives.
+  ( sleep "$1"; kill "$pid" 2>/dev/null ) >/dev/null 2>&1 &
   killer=$!
   wait "$pid" 2>/dev/null || true
   kill "$killer" 2>/dev/null || true
@@ -66,7 +68,7 @@ for f in init.lua litelog.lua settings_overlay.lua hone.lua murmur.lua murmur_co
     relay.lua unsub.lua unsub.py palette.lua quickshots.lua; do
   path="${HAMMER_DIR}/${f}"
   if [ -L "$path" ] && [ ! -e "$path" ]; then
-    bad "${f} is a broken link -> $(readlink "$path")"
+    continue  # reported once by the broken-link scan below
   elif [ -e "$path" ]; then
     ok "$f"
   else
@@ -81,7 +83,7 @@ echo "-- built tools --"
 dictate="${HOME}/bin/hs-dictate"
 if [ -x "$dictate" ]; then
   stale=0
-  for src in "${ROOT}"/apps/murmur/hs-dictate/*.swift; do
+  for src in "${ROOT}"/apps/murmur/hs-dictate/*.swift "${ROOT}"/apps/murmur/hs-dictate/Package.resolved; do
     [ "$src" -nt "$dictate" ] && stale=1
   done
   if [ "$stale" -eq 1 ]; then bad "hs-dictate is older than its source (run ./update.sh --no-pull)"
