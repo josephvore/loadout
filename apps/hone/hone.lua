@@ -42,8 +42,8 @@ local config = {
       api = "chat",
       url = "https://api.cerebras.ai/v1/chat/completions",
       keychainService = "cerebras-api",
-      model = "zai-glm-4.7",
-      reasoningEffort = "none",
+      model = "gpt-oss-120b",
+      reasoningEffort = "low", -- gpt-oss accepts low/medium/high, not none
     },
     groq = {
       api = "chat",
@@ -247,7 +247,7 @@ end
 
 local function permanentFailure(msg)
   local status = tonumber(tostring(msg):match("^HTTP (%d+)"))
-  return status == 401 or status == 403 or status == 404
+  return status == 401 or status == 402 or status == 403 or status == 404
 end
 
 -- First provider in autoRefineProviderOrder whose key exists. Resolved once
