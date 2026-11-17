@@ -66,8 +66,9 @@ for ((i = 0; i < ${#files[@]}; i++)); do
     report "$f: $bytes bytes; large files are usually generated data"
     continue
   fi
-  # Skip binary files for the text checks.
-  if ! content "$f" | LC_ALL=C grep -Iq . 2>/dev/null; then continue; fi
+  # Skip binary files for the text checks. Not a pipe: grep -q exits early,
+  # the writer dies of SIGPIPE, and pipefail would call every big file binary.
+  if ! LC_ALL=C grep -Iq . < <(content "$f") 2>/dev/null; then continue; fi
   while IFS= read -r hit; do
     report "$f:$hit"
   done < <(
