@@ -34,6 +34,10 @@
 //                     Parakeet-quality partials in place of Apple's volatile
 //                     results. The batch --parakeet pass still owns the final.
 //                     Default off.
+//     --device <uid>  record from this CoreAudio input device (by UID)
+//                     instead of the system default. The system default is
+//                     never changed; if the device is missing, the default
+//                     input is used.
 //
 //   stdin  (one command per line):  start | stop | cancel | quit
 //   stdout (one JSON object per line):
@@ -48,6 +52,7 @@
 // the FluidAudio dependency rules out a bare swiftc build)
 
 import AVFoundation
+import CoreAudio
 import FluidAudio
 import Foundation
 import Speech
@@ -80,6 +85,38 @@ func emit(_ obj: [String: Any]) {
 
 func emitError(_ message: String) { emit(["event": "error", "message": message]) }
 
+// CoreAudio device lookup for --device. Reading properties never changes the
+// system default input.
+func audioDeviceID(forUID uid: String) -> AudioDeviceID? {
+    var address = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyTranslateUIDToDevice,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain)
+    var cfUID = uid as CFString
+    var deviceID = AudioDeviceID(kAudioObjectUnknown)
+    var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+    let status = withUnsafeMutablePointer(to: &cfUID) { uidPtr in
+        AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject),
+                                   &address,
+                                   UInt32(MemoryLayout<CFString>.size), uidPtr,
+                                   &size, &deviceID)
+    }
+    guard status == noErr, deviceID != kAudioObjectUnknown else { return nil }
+    return deviceID
+}
+
+func audioDeviceName(_ id: AudioDeviceID) -> String {
+    var address = AudioObjectPropertyAddress(
+        mSelector: kAudioObjectPropertyName,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain)
+    var name: Unmanaged<CFString>?
+    var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+    let status = AudioObjectGetPropertyData(id, &address, 0, nil, &size, &name)
+    guard status == noErr, let name else { return "device \(id)" }
+    return name.takeRetainedValue() as String
+}
+
 func audioFormatsMatch(_ a: AVAudioFormat, _ b: AVAudioFormat) -> Bool {
     abs(a.sampleRate - b.sampleRate) < 0.5
         && a.channelCount == b.channelCount
@@ -109,6 +146,7 @@ actor Dictator {
     private var idleTask: Task<Void, Never>?
 
     private let engine = AVAudioEngine()
+    private var pinnedDeviceID: AudioDeviceID?
     private var tapInstalled = false
     private var tapFormat: AVAudioFormat?
     private var engineHot = false
@@ -261,8 +299,48 @@ actor Dictator {
 
     // Install the mic tap (once, or again after a device change) and start
     // the engine if it isn't already running.
+    // Point the input node at --device. Only possible while the engine is
+    // stopped, and engine.reset() or a device change can drop it, so this
+    // runs before every engine start. The system default is left alone.
+    private func pinInputDeviceIfNeeded() {
+        guard let uid = inputDeviceUID, !engine.isRunning else { return }
+        guard var wanted = audioDeviceID(forUID: uid) else {
+            if pinnedDeviceID != nil {
+                emit(["event": "diagnostic",
+                      "message": "input device missing; using system default"])
+            }
+            pinnedDeviceID = nil
+            return
+        }
+        guard let unit = engine.inputNode.audioUnit else { return }
+        var current = AudioDeviceID(kAudioObjectUnknown)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        AudioUnitGetProperty(unit, kAudioOutputUnitProperty_CurrentDevice,
+                             kAudioUnitScope_Global, 0, &current, &size)
+        if current == wanted {
+            pinnedDeviceID = wanted
+            return
+        }
+        let status = AudioUnitSetProperty(
+            unit, kAudioOutputUnitProperty_CurrentDevice,
+            kAudioUnitScope_Global, 0, &wanted,
+            UInt32(MemoryLayout<AudioDeviceID>.size))
+        AudioUnitGetProperty(unit, kAudioOutputUnitProperty_CurrentDevice,
+                             kAudioUnitScope_Global, 0, &current, &size)
+        if status == noErr, current == wanted {
+            pinnedDeviceID = wanted
+            emit(["event": "diagnostic",
+                  "message": "input device: \(audioDeviceName(wanted))"])
+        } else {
+            pinnedDeviceID = nil
+            emit(["event": "diagnostic",
+                  "message": "input device pin failed (status \(status)); using system default"])
+        }
+    }
+
     private func startAudioIfNeeded() throws {
         guard let analyzerFormat else { throw audioError("engine not prepared") }
+        pinInputDeviceIfNeeded()
         let input = engine.inputNode
         let micFormat = input.outputFormat(forBus: 0)
         guard micFormat.sampleRate > 0 else {
@@ -285,6 +363,7 @@ actor Dictator {
             engine.stop()
             input.removeTap(onBus: 0)
             engine.reset()
+            pinInputDeviceIfNeeded()
 
             // Convert whatever the input device provides (e.g. AirPods at
             // 24 kHz) to the analyzer's preferred format.
@@ -790,6 +869,8 @@ var micIdleSeconds = 180.0
 var glossaryPath: String?
 var correctionsPath: String?
 var farField = false
+// CoreAudio UID of the input device to record from (nil = system default).
+var inputDeviceUID: String?
 // Tap buffers are ~21 ms at 48 kHz, so 150 ms still catches the release
 // tail with a wide margin while shaving ~150 ms off every stop.
 var stopGraceMs: UInt64 = 150
@@ -827,6 +908,9 @@ while argi < argv.count {
     case "--stream":
         argi += 1
         if argi < argv.count { streamChoice = argv[argi] }
+    case "--device":
+        argi += 1
+        if argi < argv.count, !argv[argi].isEmpty { inputDeviceUID = argv[argi] }
     default:
         localeID = argv[argi]
     }
