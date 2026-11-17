@@ -2559,7 +2559,11 @@ handleEvent = function(event)
         or message:match("^analyzer start:")
         or message:match("^prepare:")
         or message:match("^rebuild:") then
-      local currentInput = hs.audiodevice.defaultInputDevice()
+      -- Quarantine the mic the daemon actually opened: a pinned --device,
+      -- or the system default when nothing is pinned.
+      local currentInput = (daemonDeviceUID
+          and hs.audiodevice.findDeviceByUID(daemonDeviceUID))
+        or hs.audiodevice.defaultInputDevice()
       quarantineInputDevice(currentInput, message)
       restartDaemonSoon(message, config.startRetryDelay)
       hs.alert.show("Dictation mic reset — try again", 1.2)
@@ -2592,7 +2596,9 @@ function M.begin()
     state = state, daemonReady = daemonReady, profile = activeProfile,
     targetApp = activeTarget.app, targetPID = activeTarget.pid,
   })
-  if ensurePreferredInput() then
+  -- Only switch mics from idle: during "stopping" the daemon is still
+  -- finishing the previous take, and restarting it would drop that take.
+  if state == "idle" and ensurePreferredInput() then
     pendingStart = true
     hs.timer.doAfter(config.startRetryDelay or 0.35, function()
       if pendingStart and state == "idle" then M.begin() end
