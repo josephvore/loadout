@@ -50,9 +50,10 @@ if [ -d /Applications/Hammerspoon.app ] || [ -d "${HOME}/Applications/Hammerspoo
 else
   bad "Hammerspoon not installed (https://www.hammerspoon.org)"
 fi
-if pgrep -xq Hammerspoon; then ok "Hammerspoon running"; else bad "Hammerspoon is not running (open -a Hammerspoon)"; fi
+# -a: when Caps+K runs this, Hammerspoon is our ancestor, which pgrep skips by default.
+if pgrep -axq Hammerspoon; then ok "Hammerspoon running"; else bad "Hammerspoon is not running (open -a Hammerspoon)"; fi
 HS_CLI=0
-if command -v hs >/dev/null 2>&1 && pgrep -xq Hammerspoon \
+if command -v hs >/dev/null 2>&1 && pgrep -axq Hammerspoon \
     && [ "$(hs_eval 5 'return 1')" = 1 ]; then
   HS_CLI=1
   ok "hs command-line tool answers"
