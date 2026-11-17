@@ -50,6 +50,18 @@ git diff --check
 
 echo "-- leak check --"
 lib/check-leaks.sh
+# Regression: a key at the end of a file bigger than the pipe buffer must
+# still be caught (the key is assembled at runtime so this file stays clean).
+big="$TEST_SCRATCH/big-leak.lua"
+{
+  head -c 80000 /dev/zero | tr '\0' 'x' | fold -w 80
+  printf '\n-- k = "%s%s"\n' AKIA ABCDEFGHIJKLMNOP
+} >"$big"
+if lib/check-leaks.sh "$big" >/dev/null 2>&1; then
+  echo "leak check missed a key at the end of an 80 KB file" >&2
+  exit 1
+fi
+echo "leak check catches keys in large files"
 
 echo "-- Murmur replay tests --"
 "$LUA" apps/murmur/tests/test_murmur.lua
