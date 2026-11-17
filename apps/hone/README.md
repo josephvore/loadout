@@ -32,11 +32,14 @@ order: Cerebras → Groq → OpenAI.
 | -------- | ------ | ----- |
 | OpenAI | `gpt-5.4`, `gpt-5.4-nano` | Responses API; manual refine and cleanup. |
 | Groq | `qwen/qwen3.6-27b` | Cleanup with `reasoning_effort: none`. |
-| Cerebras | `zai-glm-4.7` | Cleanup with `reasoning_effort: none`. |
+| Cerebras | `gpt-oss-120b` | Cleanup with `reasoning_effort: low` (its lowest). |
 
 An OpenAI key is required for Hone's manual refinement hotkeys. Groq and
 Cerebras are optional alternatives for Murmur's dictation cleanup. Provider
-availability, pricing, and latency can change independently of Hone.
+availability, pricing, and latency can change independently of Hone. A provider
+that rejects a request with 401, 402, 403, or 404 (bad key, unpaid account, retired model) is
+skipped until the next reload, with one alert; `./doctor.sh` lists the models
+each provider currently offers.
 
 ## Requirements
 

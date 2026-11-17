@@ -304,6 +304,7 @@ local config = {
 local task = nil            -- hs.task handle for the daemon
 local spawnDaemon = nil     -- forward declaration for input watcher
 local daemonReady = false
+local daemonDeviceUID = nil -- --device the running daemon was given (nil = default)
 local state = "idle"        -- idle | starting | recording | stopping
 local handsFree = false
 local pressTime = 0         -- when the current take began (for tap detection)
@@ -1154,41 +1155,6 @@ local function preferredInputDevice()
   return nil
 end
 
-local function setDefaultInputDevice(dev, reason)
-  local current = hs.audiodevice.defaultInputDevice()
-  if not dev then return false end
-  if current and current:uid() == dev:uid() then return false end
-
-  local ok, result = pcall(function()
-    return dev:setDefaultInputDevice()
-  end)
-  local after = hs.audiodevice.defaultInputDevice()
-  local stuck = after and after:uid() == dev:uid()
-  if not ok or not stuck then
-    local fields = deviceFields(dev)
-    fields.reason = reason
-    fields.result = result
-    fields.current = after and after:name() or nil
-    log.warn("preferred input did not stick", fields)
-    return false
-  end
-
-  log.info("default input changed", {
-    reason = reason,
-    from = current and current:name() or nil,
-    to = dev:name(),
-  })
-  return true
-end
-
-local function selectPreferredInput(reason)
-  local current = hs.audiodevice.defaultInputDevice()
-  local preferred = preferredInputDevice()
-  if not preferred then return false end
-  if current and current:uid() == preferred:uid() then return false end
-  return setDefaultInputDevice(preferred, reason or "select preferred")
-end
-
 local function stopDaemonForInputSwitch()
   if task then
     log.warn("stopping daemon for input switch")
@@ -1201,27 +1167,21 @@ local function stopDaemonForInputSwitch()
   end
 end
 
-local function ensurePreferredInput(allowRestart)
-  local current = hs.audiodevice.defaultInputDevice()
+-- The daemon records from the preferred device directly (hs-dictate
+-- --device), so Murmur never changes the system default input: calls and
+-- other apps keep whatever mic macOS picked. A restart is needed only when
+-- the device the daemon should use changes (the preferred mic was plugged
+-- in or removed). Returns true when the daemon was stopped for that.
+local function ensurePreferredInput()
+  if not task then return false end
   local preferred = preferredInputDevice()
-  if not preferred then return false end
-  if current and current:uid() == preferred:uid() then return false end
-
-  if task and not allowRestart then
-    if setDefaultInputDevice(preferred, "daemon hot reassert") then
-      inputSwitchCooldownUntil = hs.timer.secondsSinceEpoch()
-        + (config.inputSwitchCooldownSeconds or 8.0)
-      log.warn("preferred input drifted while daemon hot; reasserted without restart", {
-        from = current and current:name() or nil,
-        preferred = preferred:name(),
-      })
-    end
-    return false
-  end
-
+  local wanted = preferred and preferred:uid() or nil
+  if wanted == daemonDeviceUID then return false end
+  log.info("input device changed; restarting daemon", {
+    from = daemonDeviceUID, to = preferred and preferred:name() or "system default",
+  })
   stopDaemonForInputSwitch()
-  return setDefaultInputDevice(preferred,
-    allowRestart and "begin/restart" or "idle")
+  return true
 end
 
 local function maintainPreferredInput()
@@ -1234,7 +1194,7 @@ local function maintainPreferredInput()
     hs.timer.doAfter(inputSwitchCooldownUntil - now + 0.25, maintainPreferredInput)
     return
   end
-  local changed = ensurePreferredInput(false)
+  local changed = ensurePreferredInput()
   if changed then
     inputSwitchCooldownUntil = now + (config.inputSwitchCooldownSeconds or 8.0)
     log.info("input watcher changed device; respawning daemon after debounce")
@@ -1247,7 +1207,6 @@ end
 local function startInputWatcher()
   if inputWatcher then return end
   hs.audiodevice.watcher.setCallback(function()
-    log.debug("audio device watcher fired")
     if inputDebounce then inputDebounce:stop() end
     inputDebounce = hs.timer.doAfter(1.25, maintainPreferredInput)
   end)
@@ -2149,6 +2108,12 @@ spawnDaemon = function()
   end
   table.insert(args, "--content-hint")
   table.insert(args, config.contentHint == "far-field" and "far-field" or "default")
+  local preferred = preferredInputDevice()
+  daemonDeviceUID = preferred and preferred:uid() or nil
+  if daemonDeviceUID then
+    table.insert(args, "--device")
+    table.insert(args, daemonDeviceUID)
+  end
   log.info("spawning daemon", {
     binary = config.binary,
     locale = config.locale,
@@ -2594,7 +2559,11 @@ handleEvent = function(event)
         or message:match("^analyzer start:")
         or message:match("^prepare:")
         or message:match("^rebuild:") then
-      local currentInput = hs.audiodevice.defaultInputDevice()
+      -- Quarantine the mic the daemon actually opened: a pinned --device,
+      -- or the system default when nothing is pinned.
+      local currentInput = (daemonDeviceUID
+          and hs.audiodevice.findDeviceByUID(daemonDeviceUID))
+        or hs.audiodevice.defaultInputDevice()
       quarantineInputDevice(currentInput, message)
       restartDaemonSoon(message, config.startRetryDelay)
       hs.alert.show("Dictation mic reset — try again", 1.2)
@@ -2627,7 +2596,9 @@ function M.begin()
     state = state, daemonReady = daemonReady, profile = activeProfile,
     targetApp = activeTarget.app, targetPID = activeTarget.pid,
   })
-  if ensurePreferredInput(true) then
+  -- Only switch mics from idle: during "stopping" the daemon is still
+  -- finishing the previous take, and restarting it would drop that take.
+  if state == "idle" and ensurePreferredInput() then
     pendingStart = true
     hs.timer.doAfter(config.startRetryDelay or 0.35, function()
       if pendingStart and state == "idle" then M.begin() end

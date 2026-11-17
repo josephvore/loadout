@@ -11,9 +11,10 @@ Keep app-specific behavior inside its app directory. Do not make installers edit
 - `./bootstrap.sh`: install all Hammerspoon apps and QuickShots; it is idempotent and backs up replaced files.
 - `./bootstrap.sh --with-shell`: also link the optional shell configuration.
 - `apps/<name>/install.sh`: install or refresh one app during development.
+- `./update.sh`: pull, relink every app, rebuild hs-dictate and the settings tool when their sources changed, reload. `./doctor.sh` checks the install (exit status = problem count).
 - `cd apps/murmur/hs-dictate && swift build -c release`: compile Murmur's Swift daemon. Run `./build.sh` there to compile and copy it to `~/bin/hs-dictate`.
 - `lua apps/murmur/tests/test_murmur.lua`: run the pure-Lua regression suite.
-- `./test.sh`: the single entrypoint CI runs. It checks `git diff --check` whitespace, runs the Murmur suite, parses every tracked Lua and Python file and the listed shell scripts, runs installer safety checks against a scratch `$HOME`, does a Reap dry run on stock Bash and a bare-zsh startup smoke, then runs ShellCheck on the scripts in its `SHELL_FILES` list (`--skip-shellcheck` skips that step). Add new shell scripts to `SHELL_FILES`.
+- `./test.sh`: the single entrypoint CI runs. It checks `git diff --check` whitespace, runs `lib/check-leaks.sh`, runs the Murmur suite, the Unsub tests, and (on macOS) the settings-tool round-trip, parses every tracked Lua and Python file and the listed shell scripts, runs installer safety checks against a scratch `$HOME`, does a Reap dry run on stock Bash and a bare-zsh startup smoke, then runs ShellCheck on the scripts in its `SHELL_FILES` list (`--skip-shellcheck` skips that step). Add new shell scripts to `SHELL_FILES`.
 
 ## Coding Style & Naming Conventions
 

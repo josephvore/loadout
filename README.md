@@ -55,6 +55,15 @@ The installers use symlinks, so the clone is the live installation. It can live
 anywhere (`~/loadout` is just the default these docs use), but keep it at the
 cloned path; re-run the relevant installer after moving it.
 
+## Update and check
+
+```sh
+./update.sh    # pull, relink, rebuild what changed, reload
+./doctor.sh    # links, built tools, settings, API keys, and AI model names
+```
+
+Both are also in Caps+K (**Update Loadout**, **Check Loadout health**).
+
 Then finish the human-only steps — launch Hammerspoon, grant permissions, enter
 optional API keys, remap Caps Lock, and register Reap's Raycast script directory.
 The bootstrap prints them, and [SETUP.md](SETUP.md) is the full checklist.
@@ -104,6 +113,8 @@ each app's README for its bindings.
 ```
 loadout/
   bootstrap.sh          # install the whole suite
+  update.sh             # pull, relink, rebuild changed tools, reload
+  doctor.sh             # health check (also Caps+K → Check Loadout health)
   PREREQUISITES.md      # what to install yourself first
   SETUP.md              # full setup checklist / AI-agent runbook
   Brewfile              # optional: `brew bundle` to install CLI tools
@@ -113,6 +124,7 @@ loadout/
   lib/settings/         # settings tool that reads/writes those schemas
   lib/settings_overlay/ # merges saved settings over each app's defaults
   lib/install-common.sh # shared installer helpers
+  lib/check-leaks.sh    # blocks personal data and keys (pre-commit hook + CI)
   hammerspoon/init.lua  # canonical loader (loads whichever apps are installed)
   shell/                # optional zsh config
 ```

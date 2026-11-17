@@ -30,6 +30,7 @@ import http.cookiejar
 import ipaddress
 import json
 import re
+import socket
 import subprocess
 import sys
 import urllib.error
@@ -239,11 +240,31 @@ def host(url):
 # --------------------------------------------------------------------------
 # Web
 # --------------------------------------------------------------------------
+class UnsafeURL(Exception):
+    """A request or redirect pointed somewhere safe_to_fetch() refuses."""
+
+
+class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Re-check every redirect hop, so a public page can't bounce us to
+    plain http or a local address."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not safe_to_fetch(newurl):
+            raise UnsafeURL(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 _jar = http.cookiejar.CookieJar()
-_opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(_jar))
+_opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(_jar),
+                                      SafeRedirectHandler)
 
 
 def http_request(url, data=None, method=None, extra_headers=None):
+    """Every fetch of a sender-supplied URL goes through here: the URL and
+    each redirect must pass safe_to_fetch(). Refusals return status 0."""
+    if not safe_to_fetch(url):
+        log("blocked url", host(url))
+        return 0, url, ""
     headers = {"User-Agent": UA, "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
                "Accept-Language": "en-US,en;q=0.9"}
     headers.update(extra_headers or {})
@@ -257,6 +278,9 @@ def http_request(url, data=None, method=None, extra_headers=None):
             raw = r.read(2_000_000)
             charset = r.headers.get_content_charset() or "utf-8"
             return r.status, r.geturl(), raw.decode(charset, "replace")
+    except UnsafeURL as e:
+        log("blocked redirect", host(str(e)))
+        return 0, url, ""
     except urllib.error.HTTPError as e:
         raw = e.read(500_000) if hasattr(e, "read") else b""
         return e.code, url, raw.decode("utf-8", "replace")
@@ -266,17 +290,30 @@ def http_request(url, data=None, method=None, extra_headers=None):
 
 
 def safe_to_fetch(url):
-    """Only auto-fetch public https pages; never plain http or local hosts."""
-    parts = urllib.parse.urlparse(url)
-    name = (parts.hostname or "").lower()
-    if parts.scheme != "https" or not name or "." not in name:
+    """Only auto-fetch public https pages; never plain http or local hosts.
+    DNS names must resolve, and only to public addresses. urllib looks the
+    name up again to connect, so a fast-changing DNS answer could still slip
+    through; keeping to port 443 limits that to a TLS hello on an HTTPS port."""
+    try:
+        parts = urllib.parse.urlparse(url)
+        name = (parts.hostname or "").lower()
+        port = parts.port or 443
+    except ValueError:
+        return False
+    if parts.scheme != "https" or not name or "." not in name or port != 443:
         return False
     if name == "localhost" or name.endswith((".local", ".localhost", ".internal", ".lan")):
         return False
     try:
         return ipaddress.ip_address(name).is_global
     except ValueError:
-        return True  # a DNS name
+        pass  # a DNS name
+    try:
+        infos = socket.getaddrinfo(name, port, proto=socket.IPPROTO_TCP)
+    except (OSError, UnicodeError):
+        return False
+    addrs = {info[4][0].split("%")[0] for info in infos}
+    return bool(addrs) and all(ipaddress.ip_address(a).is_global for a in addrs)
 
 
 class PageParser(HTMLParser):
@@ -572,6 +609,8 @@ def web_unsubscribe(url, sender, user_addr, method_label, use_ai=True):
         status, final_url, body = submit_form(final_url, form, decision.get("set") or {},
                                               int(btn) if isinstance(btn, (int, float, str)) and str(btn).isdigit() else None)
         log("submit ->", status, host(final_url), f"step {step + 1}")
+        if status == 0:
+            finish(False, sender, method_label, "Couldn't submit the form safely. Opening the page", url)
         if status >= 400:
             finish(False, sender, method_label, f"Submit failed ({status}). Opening the page", url)
     page = parse_page(body)
@@ -605,7 +644,7 @@ def main():
         "| one-click", one_click, "| to", user_addr)
 
     # 1. One-click
-    if https and one_click and https.lower().startswith("https://"):
+    if https and one_click and safe_to_fetch(https):
         if dry:
             finish(True, sender, "one-click", f"DRY RUN: one-click POST to {host(https)}")
         status, _, _ = http_request(https, data=b"List-Unsubscribe=One-Click", method="POST",

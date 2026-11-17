@@ -167,7 +167,10 @@ into the focused app.
 
 ## Configuration
 
-Murmur uses your system microphone. Change the main options in Caps+K →
+Murmur uses your system microphone unless `preferredInputDevices` names one.
+A preferred mic is opened directly by the dictation helper; Murmur never
+changes the macOS default input, so calls and other apps keep their own mic.
+Change the main options in Caps+K →
 Dictation → Settings; saved values live in `~/.hammerspoon/settings/murmur.json`
 and `hs.settings`. Set device preferences and other overrides in
 `~/.hammerspoon/loadout.local.lua`, not the linked module (that file is your

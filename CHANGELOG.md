@@ -6,9 +6,28 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- `update.sh` and `doctor.sh`, also in Caps+K as **Update Loadout** and
+  **Check Loadout health**. The doctor checks links, built tools, settings
+  files, Keychain entries, and whether each AI provider still offers its model.
+- A leak check (`lib/check-leaks.sh`) run by a pre-commit hook and `test.sh`,
+  plus a gitleaks history scan in CI.
+- CI builds hs-dictate and the settings tool on macOS 26 and runs new Unsub and
+  settings round-trip tests.
+
+### Changed
+- **Murmur** records from a preferred microphone directly (`hs-dictate
+  --device`) and no longer changes the macOS default input, so calls and other
+  apps keep the mic macOS chose.
+
 ### Fixed
+- **Hone** stops retrying a provider that answers 401/402/403/404 until reload and
+  says so once, instead of failing on every dictation.
+- **Unsub** checks every redirect, form action, and one-click POST target, not
+  just the first link, refuses names that resolve to private addresses, and
+  only fetches on the standard HTTPS port.
 - **Hone** now prompts for Keychain secrets correctly and uses current Groq and
-  Cerebras cleanup models without hidden reasoning.
+  Cerebras cleanup models (`qwen/qwen3.6-27b`, `gpt-oss-120b`) with minimal reasoning.
 - **Murmur** creates `~/bin`, backs up a differing daemon, links daemon source
   non-destructively, and reports a degraded build as failure.
 - Installers now refuse symlinked Hammerspoon config directories and unusable

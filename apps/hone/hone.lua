@@ -42,8 +42,8 @@ local config = {
       api = "chat",
       url = "https://api.cerebras.ai/v1/chat/completions",
       keychainService = "cerebras-api",
-      model = "zai-glm-4.7",
-      reasoningEffort = "none",
+      model = "gpt-oss-120b",
+      reasoningEffort = "low", -- gpt-oss accepts low/medium/high, not none
     },
     groq = {
       api = "chat",
@@ -225,15 +225,44 @@ local function keychainKey(service)
   return cachedKeys[service] or nil
 end
 
+-- Providers that answered 401/402/403/404 (bad key, unpaid account, retired
+-- model, wrong URL). Retrying them cannot succeed, so they are skipped until
+-- the next reload and the user is told once. A 429 only cools the provider;
+-- other failures just fall through to the next one (see refineText).
+local brokenProviders = {}
+
+local function providerBroken(name) return brokenProviders[name] ~= nil end
+
+local function markProviderBroken(name, msg)
+  if brokenProviders[name] then return end
+  brokenProviders[name] = msg
+  local provider = config.providers and config.providers[name] or {}
+  log.error("provider disabled until reload", {
+    provider = name, model = provider.model, message = msg,
+  })
+  if hs and hs.alert then
+    hs.alert.show("Hone: " .. name .. " failed (" .. tostring(msg)
+      .. "). Skipping it until reload; check its key, billing and model.", 5)
+  end
+end
+
+local function permanentFailure(msg)
+  local status = tonumber(tostring(msg):match("^HTTP (%d+)"))
+  return status == 401 or status == 402 or status == 403 or status == 404
+end
+
 -- First provider in autoRefineProviderOrder whose key exists. Resolved once
 -- per Hammerspoon load; add a key and reload to switch.
 local resolvedAutoProvider = nil
 
 local function autoProvider()
-  if resolvedAutoProvider then return resolvedAutoProvider end
+  if resolvedAutoProvider and not providerBroken(resolvedAutoProvider) then
+    return resolvedAutoProvider
+  end
   for _, name in ipairs(config.autoRefineProviderOrder or {}) do
     local provider = config.providers and config.providers[name]
-    if provider and keychainKey(provider.keychainService) then
+    if provider and not providerBroken(name)
+        and keychainKey(provider.keychainService) then
       resolvedAutoProvider = name
       log.info("auto-refine provider selected", {
         provider = name, model = provider.model or config.autoRefineModel,
@@ -253,7 +282,9 @@ function M.raceAnchorProvider()
   local keyed = {}
   for _, name in ipairs(config.autoRefineProviderOrder or {}) do
     local p = config.providers and config.providers[name]
-    if p and keychainKey(p.keychainService) then keyed[#keyed + 1] = name end
+    if p and not providerBroken(name) and keychainKey(p.keychainService) then
+      keyed[#keyed + 1] = name
+    end
   end
   if #keyed < 2 then return nil end
   return keyed[#keyed]
@@ -643,7 +674,8 @@ function M.refineText(text, onDone, onFail, opts)
     local available, cooling = {}, {}
     for _, name in ipairs(config.autoRefineProviderOrder or {}) do
       local provider = config.providers and config.providers[name]
-      if provider and keychainKey(provider.keychainService)
+      if provider and not providerBroken(name)
+          and keychainKey(provider.keychainService)
           and not (opts.excludeProviders and opts.excludeProviders[name]) then
         if providerCooling(name) then
           cooling[#cooling + 1] = name
@@ -682,6 +714,8 @@ function M.refineText(text, onDone, onFail, opts)
     callLLM(text, onDone, function(msg)
       if tostring(msg):find("429", 1, true) then
         coolProvider(providerName)
+      elseif permanentFailure(msg) then
+        markProviderBroken(providerName, msg)
       end
       if candidates[i + 1] then
         log.warn("auto-refine provider failed; trying next", {

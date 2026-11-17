@@ -172,6 +172,14 @@ local REGISTRY = {
     label = "Show all shortcuts",
     desc  = "This window",
     run   = function(m) m.show() end },
+  { id = "palette.doctor", module = "palette", kind = "action",
+    label = "Check Loadout health",
+    desc  = "Runs doctor.sh: links, built tools, settings, keys, AI models",
+    run   = function(m) m.runDoctor() end },
+  { id = "palette.update", module = "palette", kind = "action",
+    label = "Update Loadout",
+    desc  = "Runs update.sh: pull, relink, rebuild what changed, reload",
+    run   = function(m) m.runUpdate() end },
 }
 
 ----------------------------------------------------------------
@@ -1541,6 +1549,68 @@ end
 ----------------------------------------------------------------
 -- start() — bind the window hotkey; reopen after a save/rebind reload.
 ----------------------------------------------------------------
+----------------------------------------------------------------
+-- MAINTENANCE (doctor.sh and update.sh in the checkout)
+----------------------------------------------------------------
+local maintenanceTask = nil
+
+-- Run a checkout script in the background, save its output to
+-- ~/.hammerspoon/logs/<report>, then call onDone(exitCode, reportPath).
+local function runMaintenance(script, report, extraEnv, onDone)
+  if maintenanceTask and maintenanceTask:isRunning() then
+    hs.alert.show("Loadout: " .. script .. " is already running", 2)
+    return
+  end
+  local reportPath = hs.configdir .. "/logs/" .. report
+  maintenanceTask = hs.task.new("/bin/bash", function(code, stdout, stderr)
+    maintenanceTask = nil
+    local f = io.open(reportPath, "w")
+    if f then
+      f:write((stdout or "") .. (stderr or ""))
+      f:close()
+    end
+    log.info("maintenance finished", { script = script, code = code })
+    onDone(code, reportPath)
+  end, { ROOT .. "/" .. script })
+  local env = maintenanceTask:environment() or {}
+  env.PATH = "/opt/homebrew/bin:/usr/local/bin:" .. (env.PATH or "/usr/bin:/bin:/usr/sbin:/sbin")
+  for k, v in pairs(extraEnv or {}) do env[k] = v end
+  maintenanceTask:setEnvironment(env)
+  maintenanceTask:start()
+end
+
+local function openReport(path)
+  hs.execute("/usr/bin/open -t " .. shq(path))
+end
+
+function M.runDoctor()
+  hs.alert.show("Checking Loadout…", 1)
+  runMaintenance("doctor.sh", "doctor.txt", nil, function(code, reportPath)
+    if code == 0 then
+      hs.alert.show("✅ Loadout is healthy", 2)
+    else
+      hs.alert.show("⚠️ Loadout doctor found " .. code .. " problem(s). Opening the report", 3)
+      openReport(reportPath)
+    end
+  end)
+end
+
+function M.runUpdate()
+  hs.alert.show("Updating Loadout…", 1.5)
+  -- update.sh would reload Hammerspoon itself, which would cut this task off
+  -- before it reports; reload here instead once it has finished.
+  runMaintenance("update.sh", "update.txt", { LOADOUT_NO_RELOAD = "1" },
+    function(code, reportPath)
+      if code == 0 then
+        hs.alert.show("✅ Loadout updated. Reloading", 1.5)
+        hs.timer.doAfter(1.5, hs.reload)
+      else
+        hs.alert.show("⚠️ Loadout update failed. Opening the log", 3)
+        openReport(reportPath)
+      end
+    end)
+end
+
 function M.start()
   local ok, qs = pcall(require, "quickshots")
   if ok and type(qs) == "table" and type(qs.registerCapsAction) == "function" then
