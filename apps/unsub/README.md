@@ -25,8 +25,9 @@ headers and tries each method in turn, stopping at the first that works:
    three pages until one confirms you're unsubscribed. With an OpenAI key
    stored, a model judges unfamiliar pages; otherwise simple heuristics press
    an obvious unsubscribe or confirm button.
-   Unsub only starts automatically from a public `https` link; plain `http`
-   and local-network links open in your browser instead.
+   Unsub only fetches public `https` links on the standard port, including
+   every redirect and form target; plain `http`, other ports, and
+   local-network links open in your browser instead.
 4. **Browser** — anything it can't finish (captchas, logins, pages built
    entirely in JavaScript, unreachable sites, ambiguous or risky choices)
    opens in your browser.

@@ -30,12 +30,14 @@ class SafeToFetch(unittest.TestCase):
         for url in ["http://example.com/u", "ftp://example.com/u", "https://localhost/u",
                     "https://printer.local/u", "https://intranet/u", "https://box.internal/u",
                     "https://127.0.0.1/u", "https://10.1.2.3/u", "https://192.168.0.5/u",
-                    "https://169.254.169.254/latest", "https://[::1]/u", "https://example.com:bad/u"]:
+                    "https://169.254.169.254/latest", "https://[::1]/u", "https://example.com:bad/u",
+                    "https://93.184.216.34:22/u", "https://93.184.216.34:8443/u"]:
             with self.subTest(url=url):
                 self.assertFalse(unsub.safe_to_fetch(url))
 
     def test_public_ip_literal(self):
         self.assertTrue(unsub.safe_to_fetch("https://93.184.216.34/u"))
+        self.assertTrue(unsub.safe_to_fetch("https://93.184.216.34:443/u"))
 
     def test_dns_name_must_resolve_publicly(self):
         with mock.patch.object(unsub.socket, "getaddrinfo", resolves_to("93.184.216.34")):

@@ -291,14 +291,16 @@ def http_request(url, data=None, method=None, extra_headers=None):
 
 def safe_to_fetch(url):
     """Only auto-fetch public https pages; never plain http or local hosts.
-    DNS names must resolve, and only to public addresses."""
+    DNS names must resolve, and only to public addresses. urllib looks the
+    name up again to connect, so a fast-changing DNS answer could still slip
+    through; keeping to port 443 limits that to a TLS hello on an HTTPS port."""
     try:
         parts = urllib.parse.urlparse(url)
         name = (parts.hostname or "").lower()
         port = parts.port or 443
     except ValueError:
         return False
-    if parts.scheme != "https" or not name or "." not in name:
+    if parts.scheme != "https" or not name or "." not in name or port != 443:
         return False
     if name == "localhost" or name.endswith((".local", ".localhost", ".internal", ".lan")):
         return False
