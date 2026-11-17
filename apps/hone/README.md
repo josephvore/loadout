@@ -36,7 +36,10 @@ order: Cerebras → Groq → OpenAI.
 
 An OpenAI key is required for Hone's manual refinement hotkeys. Groq and
 Cerebras are optional alternatives for Murmur's dictation cleanup. Provider
-availability, pricing, and latency can change independently of Hone.
+availability, pricing, and latency can change independently of Hone. A provider
+that rejects a request with 401, 403, or 404 (bad key, retired model) is
+skipped until the next reload, with one alert; `./doctor.sh` lists the models
+each provider currently offers.
 
 ## Requirements
 
